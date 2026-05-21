@@ -157,7 +157,13 @@ jobs:
               fi
               ok=0
               for i in \$(seq 1 30); do
-                if curl -sf \"http://127.0.0.1:\${APP_PORT}/api/health\" >/dev/null; then
+                code_direct=\$(curl -s -o /tmp/clinmax-health.json -w '%{http_code}' \"http://127.0.0.1:\${APP_PORT}/api/health\" || true)
+                if [ \"\$code_direct\" = \"200\" ]; then
+                  ok=1
+                  break
+                fi
+                code_nginx=\$(curl -s -o /tmp/clinmax-health-nginx.json -w '%{http_code}' -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true)
+                if [ \"\$code_nginx\" = \"200\" ]; then
                   ok=1
                   break
                 fi
@@ -165,6 +171,10 @@ jobs:
               done
               if [ \"\$ok\" -ne 1 ]; then
                 echo \"Healthcheck falhou na porta \${APP_PORT}\"
+                echo \"Health direct code: \${code_direct:-n/a}\"
+                echo \"Health nginx code: \${code_nginx:-n/a}\"
+                curl -s -i \"http://127.0.0.1:\${APP_PORT}/api/health\" || true
+                curl -s -i -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true
                 pm2 describe clinmax-api || true
                 pm2 logs clinmax-api --lines 80 --nostream || true
                 exit 1
