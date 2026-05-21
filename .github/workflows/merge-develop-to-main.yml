@@ -23,10 +23,20 @@ jobs:
   merge:
     if: github.event_name == 'push' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    environment: Production
     permissions:
       contents: write
 
     steps:
+      - name: Validar PAT_TOKEN
+        run: |
+          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
+            echo "::error::Secret PAT_TOKEN ausente no Environment Production."
+            echo "Crie um Personal Access Token (classic) com escopos repo + workflow"
+            echo "e adicione em Settings → Environments → Production → Secrets."
+            exit 1
+          fi
+
       - name: Checkout (PAT para o push disparar deploy em main)
         uses: actions/checkout@v5
         with:
