@@ -108,7 +108,7 @@ async function createSocket(connectionId: string, resetAuth = false) {
     auth: state as Parameters<typeof makeWASocket>[0]["auth"],
     logger,
     printQRInTerminal: false,
-    browser: ["ClinicHub", "Chrome", "1.0.0"],
+    browser: ["ClinMax", "Chrome", "1.0.0"],
     syncFullHistory: false,
     markOnlineOnConnect: false,
   })

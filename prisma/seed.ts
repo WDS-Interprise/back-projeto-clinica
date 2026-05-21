@@ -12,12 +12,12 @@ async function main() {
 
   const clinic = await prisma.clinic.upsert({
     where: { id: "clinic-default" },
-    update: { name: "ClinicHub Clínica Geral" },
+    update: { name: "ClinMax — Clínica Geral" },
     create: {
       id: "clinic-default",
-      name: "ClinicHub Clínica Geral",
+      name: "ClinMax — Clínica Geral",
       phone: "1135145000",
-      email: "contato@clinicare.com",
+      email: "contato@clinmax.com.br",
       active: true,
     },
   })
