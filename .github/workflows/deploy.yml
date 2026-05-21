@@ -130,8 +130,14 @@ jobs:
               npx prisma generate
               npx prisma migrate deploy || npx prisma db push
               npm run db:seed || true
-              sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/${{ env.NGINX_SITE }}
-              sudo ln -sf /etc/nginx/sites-available/${{ env.NGINX_SITE }} /etc/nginx/sites-enabled/${{ env.NGINX_SITE }}
+              SITE=${{ env.NGINX_SITE }}
+              if ! sudo grep -q "listen.*443" /etc/nginx/sites-available/"$SITE" 2>/dev/null; then
+                sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/"$SITE"
+                sudo ln -sf /etc/nginx/sites-available/"$SITE" /etc/nginx/sites-enabled/"$SITE"
+                echo "Nginx $SITE instalado (HTTP). Certbot: certbot --nginx -d api.clinmax.com.br"
+              else
+                echo "Nginx $SITE ja tem SSL (443) — mantendo config"
+              fi
               sudo nginx -t
               sudo systemctl reload nginx
               if command -v pm2 >/dev/null 2>&1; then
