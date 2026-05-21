@@ -1,0 +1,462 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Dev local: SQLite (npm run db:push && npm run db:seed)
+// Producao: troque para postgresql e DATABASE_URL no .env
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+enum Role {
+  ADMIN
+  DOCTOR
+  RECEPTION
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum AppointmentType {
+  SCHEDULE
+  BLOCK
+}
+
+enum Recurrence {
+  NONE
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum PaymentStatus {
+  NONE
+  PENDING
+  PAID
+}
+
+enum BillingStatus {
+  PENDING
+  CHARGED
+  RECEIVED
+}
+
+enum Gender {
+  M
+  F
+  O
+}
+
+enum WaitingListPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum WaitingListStatus {
+  WAITING
+  CONTACTED
+  SCHEDULED
+  CANCELLED
+  NO_ANSWER
+}
+
+enum AgendaNoteType {
+  DAY
+  PROFESSIONAL
+  PATIENT
+  APPOINTMENT
+  RECEPTION
+}
+
+enum AgendaNoteVisibility {
+  RECEPTION_ONLY
+  PROFESSIONAL
+  CLINIC
+  ADMIN_ONLY
+}
+
+model Clinic {
+  id           String        @id @default(cuid())
+  name         String
+  phone        String?
+  email        String?
+  active       Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  users            UserClinic[]
+  patients         Patient[]
+  appointments     Appointment[]
+  waitingList          WaitingListEntry[]
+  agendaNotes          AgendaNote[]
+  whatsappConnections  WhatsappConnection[]
+  whatsappTemplates    WhatsappMessageTemplate[]
+  whatsappSettings     ClinicWhatsappSettings?
+  whatsappChats        WhatsappChat[]
+}
+
+model User {
+  id              String               @id @default(cuid())
+  name            String
+  email           String               @unique
+  password        String
+  role            Role                 @default(ADMIN)
+  active          Boolean              @default(true)
+  gender          Gender?
+  phone           String?
+  cpf             String?              @unique
+  profileImage    String?
+  isAccountAdmin  Boolean              @default(false)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  clinics              UserClinic[]
+  doctorProfile        Doctor?
+  linkedDoctors        ReceptionistDoctor[] @relation("ReceptionistLinks")
+  waitingListCreated   WaitingListEntry[]   @relation("WaitingListCreator")
+  agendaNotesCreated   AgendaNote[]         @relation("AgendaNoteCreator")
+  whatsappConnections  WhatsappConnection[]
+}
+
+/// Conexão WhatsApp (Baileys) — uma sessão por registro, vinculada à clínica e ao usuário que conectou.
+model WhatsappConnection {
+  id                 String    @id @default(cuid())
+  clinicId           String
+  userId             String
+  name               String
+  phoneNumber        String?
+  status             String    @default("CREATED")
+  connectionType     String?
+  qrCode             String?
+  pairingCode        String?
+  lastError          String?
+  lastConnectedAt    DateTime?
+  lastDisconnectedAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  clinic             Clinic    @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authState          WhatsappAuthState?
+  chats              WhatsappChat[]
+  outbox             WhatsappOutbox[]
+
+  @@index([clinicId])
+  @@index([userId])
+}
+
+/// Configuração de WhatsApp por clínica (conexão padrão, lembretes automáticos).
+model ClinicWhatsappSettings {
+  id                   String   @id @default(cuid())
+  clinicId             String   @unique
+  defaultConnectionId  String?
+  reminderOffsetsJson  String   @default("[24]")
+  autoRemindersEnabled Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  clinic               Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+/// Template de mensagem com placeholders {{nome}}, {{data}}, etc.
+model WhatsappMessageTemplate {
+  id        String   @id @default(cuid())
+  clinicId  String
+  name      String
+  body      String
+  category  String   @default("MANUAL")
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clinic    Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  outbox    WhatsappOutbox[]
+
+  @@index([clinicId])
+}
+
+/// Conversa WhatsApp vinculada a paciente quando possível.
+model WhatsappChat {
+  id            String             @id @default(cuid())
+  connectionId  String
+  clinicId      String
+  patientId     String?
+  remoteJid     String
+  phoneDigits   String
+  lastMessage   String?
+  lastMessageAt DateTime?
+  unreadCount   Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  connection    WhatsappConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  clinic        Clinic             @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patient       Patient?           @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  messages      WhatsappMessage[]
+
+  @@unique([connectionId, remoteJid])
+  @@index([clinicId])
+  @@index([patientId])
+}
+
+/// Mensagem persistida (enviada ou recebida).
+model WhatsappMessage {
+  id          String       @id @default(cuid())
+  chatId      String
+  waMessageId String?
+  fromMe      Boolean      @default(false)
+  type        String       @default("text")
+  content     String
+  status      String       @default("SENT")
+  sentAt      DateTime     @default(now())
+  createdAt   DateTime     @default(now())
+  chat        WhatsappChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId])
+  @@index([waMessageId])
+}
+
+/// Fila de envio (manual, lembrete, automático).
+model WhatsappOutbox {
+  id            String                  @id @default(cuid())
+  connectionId  String
+  clinicId      String
+  to            String
+  body          String
+  templateId    String?
+  appointmentId String?
+  offsetHours   Int?
+  scheduledAt   DateTime                @default(now())
+  status        String                  @default("PENDING")
+  attempts      Int                     @default(0)
+  errorMessage  String?
+  sentAt        DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  connection    WhatsappConnection      @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  template      WhatsappMessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  appointment   Appointment?            @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([status, scheduledAt])
+  @@index([clinicId])
+  @@index([appointmentId])
+}
+
+/// Registro de lembrete já enviado por consulta + offset (horas antes).
+model AppointmentReminderLog {
+  id            String      @id @default(cuid())
+  appointmentId String
+  offsetHours   Int
+  sentAt        DateTime    @default(now())
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@unique([appointmentId, offsetHours])
+}
+
+/// Credenciais Baileys (creds + chaves) persistidas no banco, vinculadas à conexão/usuário.
+model WhatsappAuthState {
+  id           String             @id @default(cuid())
+  connectionId String             @unique
+  authData     String             @default("{}")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  connection   WhatsappConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+}
+
+model UserClinic {
+  id            String   @id @default(cuid())
+  userId        String
+  clinicId      String
+  isClinicAdmin Boolean  @default(false)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinic        Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clinicId])
+}
+
+model ReceptionistDoctor {
+  id             String   @id @default(cuid())
+  receptionistId String
+  doctorId       String
+  createdAt      DateTime @default(now())
+  receptionist   User     @relation("ReceptionistLinks", fields: [receptionistId], references: [id], onDelete: Cascade)
+  doctor         Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@unique([receptionistId, doctorId])
+}
+
+model Patient {
+  id             String          @id @default(cuid())
+  clinicId       String?
+  name           String
+  email          String?
+  phone          String
+  phoneHome      String?
+  whatsapp       String?
+  cpf            String          @unique
+  birthDate      DateTime
+  gender         Gender
+  address        String?
+  bloodType      String?
+  allergies      String          @default("")
+  medications    String          @default("")
+  insurancePlan  String          @default("Particular")
+  insuranceCard  String?
+  notes          String?
+  active         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  clinic         Clinic?              @relation(fields: [clinicId], references: [id])
+  appointments   Appointment[]
+  records        MedicalRecord[]
+  waitingList    WaitingListEntry[]
+  agendaNotes    AgendaNote[]
+  whatsappChats  WhatsappChat[]
+}
+
+model Doctor {
+  id                String               @id @default(cuid())
+  userId            String?              @unique
+  name              String
+  email             String               @unique
+  phone             String
+  cpf               String?
+  crm               String               @unique
+  specialty         String
+  professionalType  String?
+  hasOwnAgenda      Boolean              @default(true)
+  available         Boolean              @default(true)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  user              User?                @relation(fields: [userId], references: [id])
+  appointments      Appointment[]
+  records           MedicalRecord[]
+  receptionistLinks ReceptionistDoctor[]
+  waitingList       WaitingListEntry[]
+  agendaNotes       AgendaNote[]
+}
+
+model Procedure {
+  id           String                 @id @default(cuid())
+  name         String                 @unique
+  defaultPrice Decimal                @default(0)
+  active       Boolean                @default(true)
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  appointments AppointmentProcedure[]
+}
+
+model WaitingListEntry {
+  id                String              @id @default(cuid())
+  clinicId          String
+  patientId         String
+  doctorId          String?
+  desiredSpecialty  String?
+  priority          WaitingListPriority @default(NORMAL)
+  status            WaitingListStatus   @default(WAITING)
+  notes             String?
+  createdById       String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  clinic            Clinic              @relation(fields: [clinicId], references: [id])
+  patient           Patient             @relation(fields: [patientId], references: [id])
+  doctor            Doctor?             @relation(fields: [doctorId], references: [id])
+  createdBy         User                @relation("WaitingListCreator", fields: [createdById], references: [id])
+  appointment       Appointment?
+}
+
+model AgendaNote {
+  id          String               @id @default(cuid())
+  clinicId    String
+  title       String
+  description String
+  date        DateTime
+  doctorId    String?
+  patientId   String?
+  type        AgendaNoteType       @default(DAY)
+  visibility  AgendaNoteVisibility @default(CLINIC)
+  createdById String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  clinic      Clinic               @relation(fields: [clinicId], references: [id])
+  doctor      Doctor?              @relation(fields: [doctorId], references: [id])
+  patient     Patient?             @relation(fields: [patientId], references: [id])
+  createdBy   User                 @relation("AgendaNoteCreator", fields: [createdById], references: [id])
+}
+
+model Appointment {
+  id                  String                 @id @default(cuid())
+  clinicId            String?
+  waitingListEntryId  String?                @unique
+  type                AppointmentType        @default(SCHEDULE)
+  patientId           String?
+  doctorId            String
+  date                DateTime
+  startTime           String
+  endTime             String                 @default("08:30")
+  status              AppointmentStatus      @default(SCHEDULED)
+  insurancePlan       String                 @default("Particular")
+  recurrence          Recurrence             @default(NONE)
+  notes               String?
+  generatePaymentLink Boolean                @default(false)
+  paymentLinkUrl      String?
+  paymentStatus       PaymentStatus          @default(NONE)
+  reminderSentAt      DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  clinic              Clinic?                @relation(fields: [clinicId], references: [id])
+  patient             Patient?               @relation(fields: [patientId], references: [id])
+  doctor              Doctor                 @relation(fields: [doctorId], references: [id])
+  waitingListEntry    WaitingListEntry?      @relation(fields: [waitingListEntryId], references: [id])
+  procedures          AppointmentProcedure[]
+  billing             AppointmentBilling?
+  reminderLogs        AppointmentReminderLog[]
+  whatsappOutbox      WhatsappOutbox[]
+}
+
+model AppointmentProcedure {
+  id            String      @id @default(cuid())
+  appointmentId String
+  procedureId   String
+  quantity      Int         @default(1)
+  unitPrice     Decimal
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  procedure     Procedure   @relation(fields: [procedureId], references: [id])
+
+  @@unique([appointmentId, procedureId])
+}
+
+model AppointmentBilling {
+  id            String        @id @default(cuid())
+  appointmentId String        @unique
+  totalAmount   Decimal       @default(0)
+  chargedAmount Decimal       @default(0)
+  billingStatus BillingStatus @default(PENDING)
+  receivedAt    DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  appointment   Appointment   @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+}
+
+model MedicalRecord {
+  id           String   @id @default(cuid())
+  patientId    String
+  doctorId     String
+  date         DateTime @default(now())
+  diagnosis    String
+  prescription String
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  patient      Patient  @relation(fields: [patientId], references: [id])
+  doctor       Doctor   @relation(fields: [doctorId], references: [id])
+}
