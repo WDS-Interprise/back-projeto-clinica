@@ -125,11 +125,12 @@ jobs:
                 exit 1
               fi
               node -v
-              npm ci --omit=dev
+              npm ci
               npm run build
               npx prisma generate
               npx prisma migrate deploy || npx prisma db push
               npm run db:seed || true
+              npm prune --omit=dev
               SITE=${{ env.NGINX_SITE }}
               if ! sudo grep -q 'listen.*443' /etc/nginx/sites-available/\$SITE 2>/dev/null; then
                 sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/\$SITE
