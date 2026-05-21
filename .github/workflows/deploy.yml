@@ -9,6 +9,13 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch ou SHA para deploy
+        required: false
+        type: string
+        default: main
 
 concurrency:
   group: deploy-clinmax-api
@@ -28,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Configurar SSH
         run: |
