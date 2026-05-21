@@ -103,6 +103,12 @@ jobs:
               set -a
               . ./.env
               set +a
+              APP_PORT=\${PORT:-3550}
+              if echo \"\${DATABASE_URL:-}\" | grep -Eq '^file:'; then
+                echo 'DATABASE_URL de producao aponta para SQLite (file:...).'
+                echo 'Ajuste DOTENV_FILE no GitHub Environment Production para Postgres (127.0.0.1:5433).'
+                exit 1
+              fi
               if command -v docker >/dev/null 2>&1; then
                 if docker ps -a --format '{{.Names}}' | grep -qx clinmax_postgres; then
                   docker start clinmax_postgres 2>/dev/null || true
@@ -149,8 +155,20 @@ jobs:
                 echo 'PM2 não instalado — instale: npm i -g pm2'
                 exit 1
               fi
-              sleep 3
-              curl -sf http://127.0.0.1:3550/api/health >/dev/null || (echo 'Healthcheck falhou' && exit 1)
+              ok=0
+              for i in \$(seq 1 30); do
+                if curl -sf \"http://127.0.0.1:\${APP_PORT}/api/health\" >/dev/null; then
+                  ok=1
+                  break
+                fi
+                sleep 2
+              done
+              if [ \"\$ok\" -ne 1 ]; then
+                echo \"Healthcheck falhou na porta \${APP_PORT}\"
+                pm2 describe clinmax-api || true
+                pm2 logs clinmax-api --lines 80 --nostream || true
+                exit 1
+              fi
               rm -rf \"\$TMP\"
               echo 'ClinMax API deploy OK'
             "
