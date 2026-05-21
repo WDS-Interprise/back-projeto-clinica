@@ -1,0 +1,108 @@
+# Deploy manual do edge (Traefik) com aprovação.
+name: Deploy Edge — Traefik (manual)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-edge-traefik
+  cancel-in-progress: false
+
+env:
+  VPS_REPO_DIR: ~/back-manager-worker-repos
+  EDGE_COMPOSE_FILE: docker-compose.edge.yml
+  SSH_PORT: ${{ secrets.PORT || '22' }}
+  EXPECTED_REMOTE_USER: deploy
+
+jobs:
+  deploy-edge:
+    runs-on: ubuntu-latest
+    environment: Production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configurar chave SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Carregar chave no ssh-agent (com passphrase opcional)
+        env:
+          SSH_PASSPHRASE: ${{ secrets.SSH_PASSPHRASE }}
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          if [ -n "$SSH_PASSPHRASE" ]; then
+            printf '%s\n' '#!/usr/bin/env bash' 'echo "$SSH_PASSPHRASE"' > ~/.ssh/askpass.sh
+            chmod 700 ~/.ssh/askpass.sh
+            DISPLAY=:0 SSH_ASKPASS=~/.ssh/askpass.sh SSH_ASKPASS_REQUIRE=force ssh-add ~/.ssh/deploy_key </dev/null
+          else
+            ssh-add ~/.ssh/deploy_key
+          fi
+
+      - name: Validar credenciais SSH
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.USERNAME }}
+          SSH_PORT_RAW: ${{ env.SSH_PORT }}
+        run: |
+          test -n "$SSH_HOST" || (echo "Secret HOST ausente" && exit 1)
+          test -n "$SSH_USER" || (echo "Secret USERNAME ausente" && exit 1)
+          echo "$SSH_PORT_RAW" | grep -Eq '^[0-9]{1,5}$' || (echo "Secret PORT inválido. Use apenas números, ex.: 22" && exit 1)
+
+      - name: Diagnóstico de conectividade SSH (HOST:PORT)
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_PORT_RAW: ${{ env.SSH_PORT }}
+        run: |
+          echo "Alvo SSH configurado: ${SSH_HOST}:${SSH_PORT_RAW}"
+          getent ahosts "$SSH_HOST" || true
+          timeout 8 bash -lc "cat < /dev/null > /dev/tcp/${SSH_HOST}/${SSH_PORT_RAW}" \
+            && echo "TCP_OK: porta SSH acessível" \
+            || (echo "TCP_FALHA: sem conectividade para ${SSH_HOST}:${SSH_PORT_RAW}. Verifique HOST/PORT do Environment Production e firewall/painel da VPS." && exit 1)
+
+      - name: Materializar .env edge (runner)
+        env:
+          DOTENV_FILE: ${{ vars.DOTENV_FILE }}
+        run: |
+          test -n "$DOTENV_FILE" || (echo "Variable DOTENV_FILE ausente" && exit 1)
+          printf '%s\n' "$DOTENV_FILE" > .env.edge
+          tr -d '\r' < .env.edge > .env.edge.tmp && mv .env.edge.tmp .env.edge
+          grep -q '^BASE_DOMAIN=' .env.edge
+          grep -q '^ACME_EMAIL=' .env.edge
+          grep -q '^TRAEFIK_DASH_HASH=' .env.edge
+          grep -q '^TRAEFIK_NETWORK=' .env.edge
+
+      - name: Atualizar código e aplicar edge
+        run: |
+          set -e
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 \
+            -i ~/.ssh/deploy_key -p ${{ env.SSH_PORT }} ${{ secrets.USERNAME }}@${{ secrets.HOST }} \
+            "mkdir -p ${{ env.VPS_REPO_DIR }}"
+          scp -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o BatchMode=yes \
+            -i ~/.ssh/deploy_key -P ${{ env.SSH_PORT }} \
+            docker-compose.edge.yml ${{ secrets.USERNAME }}@${{ secrets.HOST }}:${{ env.VPS_REPO_DIR }}/docker-compose.edge.yml
+          scp -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o BatchMode=yes \
+            -i ~/.ssh/deploy_key -P ${{ env.SSH_PORT }} \
+            .env.edge ${{ secrets.USERNAME }}@${{ secrets.HOST }}:${{ env.VPS_REPO_DIR }}/.env
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            -i ~/.ssh/deploy_key -p ${{ env.SSH_PORT }} ${{ secrets.USERNAME }}@${{ secrets.HOST }} "
+            set -e
+            if [ \"\$(id -un)\" != \"${{ env.EXPECTED_REMOTE_USER }}\" ]; then
+              echo \"Aviso: utilizador remoto atual é \$(id -un), esperado: ${{ env.EXPECTED_REMOTE_USER }}\"
+            fi
+            cd ${{ env.VPS_REPO_DIR }}
+            grep -q '^BASE_DOMAIN=' .env
+            grep -q '^ACME_EMAIL=' .env
+            grep -q '^TRAEFIK_DASH_HASH=' .env
+            grep -q '^TRAEFIK_NETWORK=' .env
+            docker network inspect ${TRAEFIK_NETWORK} >/dev/null 2>&1 || docker network create ${TRAEFIK_NETWORK} >/dev/null
+            docker rm -f traefik core_api_stub core_n8n core_rabbitmq core_postgres 2>/dev/null || true
+            docker compose -f ${{ env.EDGE_COMPOSE_FILE }} config -q
+            docker compose -f ${{ env.EDGE_COMPOSE_FILE }} up -d --build traefik
+            echo Edge_atualizado_com_sucesso.
+          "
