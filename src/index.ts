@@ -96,7 +96,7 @@ await app.register(agendaNotesRoutes, { prefix: "/api/agenda-notes" })
 await app.register(whatsappRoutes, { prefix: "/api/whatsapp" })
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-  console.log(`[CliniCare API] running on http://localhost:${PORT}`)
+  console.log(`[ClinMax API] running on http://localhost:${PORT}`)
   void resumeWhatsappSessionsOnBoot()
   startWhatsappScheduler()
 })
