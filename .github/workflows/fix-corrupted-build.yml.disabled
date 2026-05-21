@@ -1,0 +1,88 @@
+name: 🔧 Corrigir Build Corrompido
+
+on:
+  workflow_dispatch:  # Execução manual
+
+jobs:
+  fix-build:
+    runs-on: ubuntu-latest
+    environment: Production
+
+    steps:
+      - name: 🔧 Corrigir build corrompido
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          port: ${{ secrets.PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /root/api-vila-vault
+            
+            export PATH="/root/.local/share/fnm:$PATH"
+            eval "`fnm env`"
+            fnm use --install-if-missing 22
+            
+            # Parar apenas api-vila-vault (sem afetar outros processos PM2)
+            echo "🛑 Parando apenas api-vila-vault (outros processos PM2 continuarão rodando)..."
+            pm2 stop api-vila-vault 2>/dev/null || true
+            pm2 delete api-vila-vault 2>/dev/null || true
+            sleep 2
+            
+            # Limpar build anterior
+            echo "🧹 Limpando build anterior..."
+            rm -rf build/*
+            rm -rf node_modules/.cache
+            
+            # Reinstalar dependências
+            echo "📦 Reinstalando dependências..."
+            npm install
+            
+            # Gerar Prisma
+            echo "📦 Gerando Prisma Client..."
+            npx prisma generate
+            
+            # Fazer build
+            echo "🔨 Executando build..."
+            npm run build
+            
+            # Verificar build
+            echo "✅ Verificando integridade do build..."
+            if [ ! -f "build/app.js" ]; then
+              echo "❌ ERRO: build/app.js não foi criado!"
+              exit 1
+            fi
+            
+            FILE_SIZE=$(stat -f%z build/app.js 2>/dev/null || stat -c%s build/app.js 2>/dev/null || echo "0")
+            echo "📊 Tamanho do arquivo: ${FILE_SIZE} bytes"
+            
+            if [ "$FILE_SIZE" -lt 1000000 ]; then
+              echo "❌ ERRO: build/app.js está muito pequeno (${FILE_SIZE} bytes)!"
+              exit 1
+            fi
+            
+            # Verificar sintaxe
+            echo "🔍 Verificando sintaxe..."
+            if ! node -c build/app.js 2>/dev/null; then
+              echo "❌ ERRO: Arquivo tem erros de sintaxe!"
+              exit 1
+            fi
+            
+            echo "✅ Sintaxe do arquivo está correta"
+            
+            # Iniciar PM2
+            echo "🚀 Iniciando PM2..."
+            pm2 start build/app.js --name api-vila-vault
+            
+            sleep 5
+            
+            # Verificar se iniciou
+            if pm2 list | grep -q "api-vila-vault.*online"; then
+              echo "✅ PM2 iniciado com sucesso!"
+              pm2 save
+            else
+              echo "❌ ERRO: PM2 não iniciou corretamente!"
+              pm2 logs api-vila-vault --lines 30
+              exit 1
+            fi
+

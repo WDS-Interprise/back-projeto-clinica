@@ -1,0 +1,127 @@
+name: Deploy ClinMax API (VPS)
+
+# Repositório: back-projeto-clinica (ClinicHub / ClinMax)
+# Secrets (Environment Production): SSH_PRIVATE_KEY, HOST, USERNAME, PORT
+# Variables: DOTENV_FILE (conteúdo do .env de produção)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-clinmax-api
+  cancel-in-progress: true
+
+env:
+  DEPLOY_TMP: /tmp/clinmax-api-deploy
+  VPS_APP_DIR: ~/clinmax-api
+  NGINX_SITE: clinmax-api
+  SSH_PORT: ${{ secrets.PORT || '22' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configurar SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Validar secrets
+        env:
+          SSH_HOST: ${{ secrets.HOST }}
+          SSH_USER: ${{ secrets.USERNAME }}
+        run: |
+          test -n "$SSH_HOST" || (echo "Secret HOST ausente" && exit 1)
+          test -n "$SSH_USER" || (echo "Secret USERNAME ausente" && exit 1)
+
+      - name: Materializar .env de produção
+        env:
+          DOTENV_FILE: ${{ vars.DOTENV_FILE }}
+        run: |
+          test -n "$DOTENV_FILE" || (echo "Variable DOTENV_FILE ausente" && exit 1)
+          printf '%s\n' "$DOTENV_FILE" > .env.deploy
+          tr -d '\r' < .env.deploy > .env.deploy.tmp && mv .env.deploy.tmp .env.deploy
+          grep -q '^DATABASE_URL=' .env.deploy
+          grep -q '^JWT_SECRET=' .env.deploy
+          grep -q '^PORT=' .env.deploy
+
+      - name: Compactar código
+        run: git archive --format=tar.gz --output=repo.tar.gz HEAD
+
+      - name: Enviar para VPS
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: |
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i ~/.ssh/deploy_key -p ${{ env.SSH_PORT }} \
+              ${{ secrets.USERNAME }}@${{ secrets.HOST }} "mkdir -p ${{ env.DEPLOY_TMP }} ${{ env.VPS_APP_DIR }}"
+            scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i ~/.ssh/deploy_key -P ${{ env.SSH_PORT }} \
+              repo.tar.gz ${{ secrets.USERNAME }}@${{ secrets.HOST }}:${{ env.DEPLOY_TMP }}/
+            scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i ~/.ssh/deploy_key -P ${{ env.SSH_PORT }} \
+              .env.deploy deploy/nginx-api.conf deploy/ecosystem.config.cjs deploy/docker-compose.prod.yml \
+              ${{ secrets.USERNAME }}@${{ secrets.HOST }}:${{ env.DEPLOY_TMP }}/
+
+      - name: Instalar dependências, migrar DB e reiniciar API
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 15
+          max_attempts: 2
+          retry_wait_seconds: 45
+          command: |
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i ~/.ssh/deploy_key -p ${{ env.SSH_PORT }} \
+              ${{ secrets.USERNAME }}@${{ secrets.HOST }} "
+              set -e
+              APP_DIR=\${HOME}/clinmax-api
+              TMP=${{ env.DEPLOY_TMP }}
+              rm -rf \"\$APP_DIR\"/*
+              tar -xzf \"\$TMP/repo.tar.gz\" -C \"\$APP_DIR\"
+              cp \"\$TMP/.env.deploy\" \"\$APP_DIR/.env\"
+              cp \"\$TMP/nginx-api.conf\" \"\$APP_DIR/deploy/nginx-api.conf\"
+              cp \"\$TMP/ecosystem.config.cjs\" \"\$APP_DIR/deploy/ecosystem.config.cjs\"
+              cp \"\$TMP/docker-compose.prod.yml\" \"\$APP_DIR/deploy/docker-compose.prod.yml\"
+              cd \"\$APP_DIR\"
+              if command -v docker >/dev/null 2>&1; then
+                docker compose -f deploy/docker-compose.prod.yml up -d || true
+              fi
+              export NODE_ENV=production
+              if command -v fnm >/dev/null 2>&1; then
+                eval \"\$(fnm env)\"
+                fnm use 20 || fnm install 20
+              elif command -v nvm >/dev/null 2>&1; then
+                . \"\$HOME/.nvm/nvm.sh\"
+                nvm install 20
+                nvm use 20
+              fi
+              node -v
+              npm ci --omit=dev
+              npm run build
+              npx prisma generate
+              npx prisma migrate deploy || npx prisma db push
+              npm run db:seed || true
+              sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/${{ env.NGINX_SITE }}
+              sudo ln -sf /etc/nginx/sites-available/${{ env.NGINX_SITE }} /etc/nginx/sites-enabled/${{ env.NGINX_SITE }}
+              sudo nginx -t
+              sudo systemctl reload nginx
+              if command -v pm2 >/dev/null 2>&1; then
+                CLINMAX_API_DIR=\"\$APP_DIR\" pm2 startOrReload deploy/ecosystem.config.cjs --update-env
+                pm2 save
+              else
+                echo 'PM2 não instalado — instale: npm i -g pm2'
+                exit 1
+              fi
+              sleep 3
+              curl -sf http://127.0.0.1:3001/api/health >/dev/null || (echo 'Healthcheck falhou' && exit 1)
+              rm -rf \"\$TMP\"
+              echo 'ClinMax API deploy OK'
+            "
