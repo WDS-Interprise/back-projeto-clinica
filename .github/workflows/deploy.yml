@@ -110,7 +110,6 @@ jobs:
                   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d || echo 'Aviso: postgres docker nao subiu — confira DATABASE_URL (.env)'
                 fi
               fi
-              export NODE_ENV=production
               export PATH=\"\$HOME/.local/bin:\$HOME/.local/share/fnm/current/bin:\$HOME/.fnm/current/bin:/usr/local/bin:/usr/bin:\$PATH\"
               if [ -x \"\$HOME/.local/share/fnm/fnm\" ]; then
                 eval \"\$(\$HOME/.local/share/fnm/fnm env)\"
@@ -125,12 +124,14 @@ jobs:
                 exit 1
               fi
               node -v
-              npm ci
+              # Mesmo com NODE_ENV=production no .env, precisamos dos @types para o tsc.
+              NODE_ENV=development npm ci --include=dev
               npm run build
               npx prisma generate
               npx prisma migrate deploy || npx prisma db push
               npm run db:seed || true
               npm prune --omit=dev
+              export NODE_ENV=production
               SITE=${{ env.NGINX_SITE }}
               if ! sudo grep -q 'listen.*443' /etc/nginx/sites-available/\$SITE 2>/dev/null; then
                 sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/\$SITE
