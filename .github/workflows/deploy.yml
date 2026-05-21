@@ -130,7 +130,7 @@ jobs:
                 exit 1
               fi
               sleep 3
-              curl -sf http://127.0.0.1:3001/api/health >/dev/null || (echo 'Healthcheck falhou' && exit 1)
+              curl -sf http://127.0.0.1:3550/api/health >/dev/null || (echo 'Healthcheck falhou' && exit 1)
               rm -rf \"\$TMP\"
               echo 'ClinMax API deploy OK'
             "
