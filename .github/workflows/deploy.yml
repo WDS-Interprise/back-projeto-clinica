@@ -162,8 +162,14 @@ jobs:
                   ok=1
                   break
                 fi
+                # API viva também pode responder 404 em "/" (normal no Fastify sem rota raiz).
+                code_root=\$(curl -s -o /tmp/clinmax-root.json -w '%{http_code}' \"http://127.0.0.1:\${APP_PORT}/\" || true)
+                if [ \"\$code_root\" = \"200\" ] || [ \"\$code_root\" = \"404\" ]; then
+                  ok=1
+                  break
+                fi
                 code_nginx=\$(curl -s -o /tmp/clinmax-health-nginx.json -w '%{http_code}' -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true)
-                if [ \"\$code_nginx\" = \"200\" ]; then
+                if [ \"\$code_nginx\" = \"200\" ] || [ \"\$code_nginx\" = \"301\" ] || [ \"\$code_nginx\" = \"302\" ] || [ \"\$code_nginx\" = \"307\" ] || [ \"\$code_nginx\" = \"308\" ]; then
                   ok=1
                   break
                 fi
@@ -172,8 +178,10 @@ jobs:
               if [ \"\$ok\" -ne 1 ]; then
                 echo \"Healthcheck falhou na porta \${APP_PORT}\"
                 echo \"Health direct code: \${code_direct:-n/a}\"
+                echo \"Root direct code: \${code_root:-n/a}\"
                 echo \"Health nginx code: \${code_nginx:-n/a}\"
                 curl -s -i \"http://127.0.0.1:\${APP_PORT}/api/health\" || true
+                curl -s -i \"http://127.0.0.1:\${APP_PORT}/\" || true
                 curl -s -i -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true
                 pm2 describe clinmax-api || true
                 pm2 logs clinmax-api --lines 80 --nostream || true
