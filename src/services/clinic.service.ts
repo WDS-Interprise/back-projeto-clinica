@@ -26,7 +26,17 @@ export async function create(data: {
 
 export async function update(
   id: string,
-  data: Partial<{ name: string; phone: string; email: string; active: boolean }>
+  data: Partial<{
+    name: string
+    phone: string
+    email: string
+    active: boolean
+    agendaStartTime: string
+    agendaEndTime: string
+    lunchStartTime: string
+    lunchEndTime: string
+    slotIntervalMinutes: number
+  }>
 ) {
   return prisma.clinic.update({ where: { id }, data })
 }

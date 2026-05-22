@@ -53,6 +53,12 @@ export async function create(req: FastifyRequest, reply: FastifyReply) {
     if (error.message === "DOCTOR_NOT_LINKED" || error.message === "DOCTOR_NOT_ALLOWED") {
       return reply.status(403).send({ error: "Profissional nao permitido" })
     }
+    if (error.message === "LUNCH_HOURS") {
+      return reply.status(400).send({ error: "Horario de almoco — nao e possivel agendar consultas" })
+    }
+    if (error.message === "OUTSIDE_WORK_HOURS") {
+      return reply.status(400).send({ error: "Horario fora do expediente da clinica" })
+    }
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao criar consulta" })
   }
@@ -62,14 +68,41 @@ export async function update(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
     const { id } = req.params as { id: string }
+    const body = req.body as {
+      cidCode?: string | null
+      cidDescription?: string | null
+      cidVersion?: string | null
+    }
     const appointment = await appointmentService.update(ctx, id, req.body as any)
     if (!appointment) {
       return reply.status(404).send({ error: "Consulta nao encontrada" })
+    }
+    if (body.cidCode !== undefined) {
+      const { writeAuditLog } = await import("@/lib/audit-log.js")
+      await writeAuditLog({
+        clinicId: ctx.clinicId,
+        userId: ctx.userId,
+        module: "Atendimento",
+        action: body.cidCode ? "CID_USADO" : "CID_REMOVIDO",
+        entityType: "Appointment",
+        entityId: id,
+        description: body.cidCode
+          ? `CID ${body.cidCode} vinculado ao atendimento`
+          : "CID removido do atendimento",
+        metadata: {
+          cidCode: body.cidCode,
+          cidDescription: body.cidDescription,
+          cidVersion: body.cidVersion,
+        },
+      })
     }
     return reply.send(appointment)
   } catch (error: any) {
     if (error.message === "DOCTOR_NOT_LINKED") {
       return reply.status(403).send({ error: "Profissional nao permitido" })
+    }
+    if (error.message === "APPOINTMENT_CLOSED") {
+      return reply.status(400).send({ error: "Atendimento finalizado — CID não pode ser alterado" })
     }
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao atualizar consulta" })

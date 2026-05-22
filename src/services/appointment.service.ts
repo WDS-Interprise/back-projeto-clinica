@@ -1,5 +1,15 @@
+import {
+  addMinutesToTime,
+  generateAgendaSlots,
+  isWithinWorkHours,
+  overlapsLunch,
+  parseAgendaSchedule,
+  timeRangesOverlap,
+  normalizeTimeHHmm,
+  timeToMinutes,
+} from "@/lib/agenda-schedule.js"
 import prisma from "@/lib/prisma.js"
-import type { AppointmentStatus, AppointmentType, Recurrence } from "@prisma/client"
+import type { AppointmentStatus, AppointmentType, Prisma, Recurrence } from "@prisma/client"
 import {
   appointmentInclude,
   buildRecurrenceDates,
@@ -93,6 +103,86 @@ type CreateInput = {
   generatePaymentLink?: boolean
   procedures?: ProcedureInput[]
   waitingListEntryId?: string
+  cidCode?: string | null
+  cidDescription?: string | null
+  cidVersion?: string | null
+  mainComplaint?: string | null
+  physicalExam?: string | null
+  currentIllnessHistory?: string | null
+  historyAndAntecedents?: string | null
+  conduct?: string | null
+  prescriptionSummary?: string | null
+}
+
+type AppointmentTimelineFields = {
+  startedAt: Date | null
+  endedAt: Date | null
+}
+
+function appointmentTimeline(appointment: unknown): AppointmentTimelineFields {
+  const row = appointment as AppointmentTimelineFields
+  return {
+    startedAt: row.startedAt ?? null,
+    endedAt: row.endedAt ?? null,
+  }
+}
+
+function buildAppointmentUpdateData(
+  data: Partial<CreateInput> & { status?: AppointmentStatus },
+  existing: unknown
+): Prisma.AppointmentUncheckedUpdateInput {
+  const { startedAt, endedAt } = appointmentTimeline(existing)
+
+  return {
+    type: data.type,
+    patientId: data.patientId === undefined ? undefined : data.patientId,
+    doctorId: data.doctorId,
+    date: data.date ? parseDateOnly(data.date) : undefined,
+    startTime: data.startTime,
+    endTime: data.endTime,
+    status: data.status,
+    insurancePlan: data.insurancePlan,
+    notes: data.notes,
+    generatePaymentLink: data.generatePaymentLink,
+    cidCode: data.cidCode === undefined ? undefined : data.cidCode,
+    cidDescription: data.cidDescription === undefined ? undefined : data.cidDescription,
+    cidVersion: data.cidVersion === undefined ? undefined : data.cidVersion,
+    mainComplaint: data.mainComplaint === undefined ? undefined : data.mainComplaint,
+    physicalExam: data.physicalExam === undefined ? undefined : data.physicalExam,
+    currentIllnessHistory:
+      data.currentIllnessHistory === undefined ? undefined : data.currentIllnessHistory,
+    historyAndAntecedents:
+      data.historyAndAntecedents === undefined ? undefined : data.historyAndAntecedents,
+    conduct: data.conduct === undefined ? undefined : data.conduct,
+    prescriptionSummary:
+      data.prescriptionSummary === undefined ? undefined : data.prescriptionSummary,
+    ...(data.status === "IN_PROGRESS" && existing && (existing as { status?: string }).status !== "IN_PROGRESS" && !startedAt
+      ? { startedAt: new Date() }
+      : {}),
+    ...(data.status === "COMPLETED" && !endedAt ? { endedAt: new Date() } : {}),
+  } as Prisma.AppointmentUncheckedUpdateInput
+}
+
+async function getClinicSchedule(clinicId: string) {
+  const clinic = await prisma.clinic.findUnique({ where: { id: clinicId } })
+  return parseAgendaSchedule(clinic ?? undefined)
+}
+
+async function validateAppointmentTimes(
+  clinicId: string,
+  type: AppointmentType | undefined,
+  startTime: string,
+  endTime: string
+) {
+  if (type === "BLOCK") return
+
+  const schedule = await getClinicSchedule(clinicId)
+  if (!isWithinWorkHours(startTime, endTime, schedule)) {
+    throw new Error("OUTSIDE_WORK_HOURS")
+  }
+  if (overlapsLunch(startTime, endTime, schedule)) {
+    throw new Error("LUNCH_HOURS")
+  }
 }
 
 async function createOne(ctx: AuthContext, data: CreateInput, date: Date) {
@@ -107,6 +197,8 @@ async function createOne(ctx: AuthContext, data: CreateInput, date: Date) {
   if (ctx.role === "DOCTOR" && ctx.doctorId && data.doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
+
+  await validateAppointmentTimes(ctx.clinicId, data.type, data.startTime, data.endTime)
 
   let notes = data.notes ?? null
   if (data.waitingListEntryId) {
@@ -185,6 +277,23 @@ export async function update(
   })
   if (!existing) return null
 
+  if (existing.status === "COMPLETED") {
+    const clinicalKeys: (keyof CreateInput)[] = [
+      "mainComplaint",
+      "physicalExam",
+      "currentIllnessHistory",
+      "historyAndAntecedents",
+      "conduct",
+      "prescriptionSummary",
+      "cidCode",
+      "cidDescription",
+      "cidVersion",
+    ]
+    if (clinicalKeys.some((k) => data[k] !== undefined)) {
+      throw new Error("APPOINTMENT_CLOSED")
+    }
+  }
+
   if (data.doctorId && ctx.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
     if (!ctx.linkedDoctorIds.includes(data.doctorId)) {
       throw new Error("DOCTOR_NOT_LINKED")
@@ -215,18 +324,7 @@ export async function update(
 
     await tx.appointment.update({
       where: { id },
-      data: {
-        type: data.type,
-        patientId: data.patientId === undefined ? undefined : data.patientId,
-        doctorId: data.doctorId,
-        date: data.date ? parseDateOnly(data.date) : undefined,
-        startTime: data.startTime,
-        endTime: data.endTime,
-        status: data.status,
-        insurancePlan: data.insurancePlan,
-        notes: data.notes,
-        generatePaymentLink: data.generatePaymentLink,
-      },
+      data: buildAppointmentUpdateData(data, existing),
     })
   })
 
@@ -276,15 +374,17 @@ export async function receipt(ctx: AuthContext, id: string) {
 
   await prisma.appointment.update({
     where: { id },
-    data: { paymentStatus: "PAID", status: "COMPLETED" },
+    data: {
+      paymentStatus: "PAID",
+      status: "COMPLETED",
+      endedAt: new Date(),
+    } as Prisma.AppointmentUncheckedUpdateInput,
   })
 
   return billing
 }
 
-const SLOT_MINUTES = ["08:00", "08:15", "08:30", "08:45", "09:00", "09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45", "11:00", "11:15", "11:30", "14:00", "14:15", "14:30", "14:45", "15:00", "15:15", "15:30", "16:00", "16:15", "16:30"]
-
-export async function findNextFreeSlot(ctx: AuthContext, doctorId: string, dateStr: string) {
+export async function listFreeSlots(ctx: AuthContext, doctorId: string, dateStr: string) {
   if (ctx.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
     if (!ctx.linkedDoctorIds.includes(doctorId)) {
       throw new Error("DOCTOR_NOT_LINKED")
@@ -293,28 +393,82 @@ export async function findNextFreeSlot(ctx: AuthContext, doctorId: string, dateS
   if (ctx.role === "DOCTOR" && ctx.doctorId && doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
+
+  const schedule = await getClinicSchedule(ctx.clinicId)
+  const allSlots = generateAgendaSlots(schedule)
   const day = parseDateOnly(dateStr)
   const next = new Date(day)
   next.setDate(next.getDate() + 1)
 
   const busy = await prisma.appointment.findMany({
-    where: { doctorId, date: { gte: day, lt: next } },
+    where: {
+      doctorId,
+      date: { gte: day, lt: next },
+      status: { notIn: ["CANCELLED"] },
+    },
     select: { startTime: true, endTime: true },
   })
 
-  const busyStarts = new Set(busy.map((b) => b.startTime))
+  const interval = schedule.slotIntervalMinutes
 
-  for (const slot of SLOT_MINUTES) {
-    if (!busyStarts.has(slot)) {
-      const [h, m] = slot.split(":").map(Number)
-      const endM = m + 15
-      const endH = h + Math.floor(endM / 60)
-      const endTime = `${String(endH).padStart(2, "0")}:${String(endM % 60).padStart(2, "0")}`
-      return { startTime: slot, endTime }
-    }
+  const horarios = allSlots
+    .filter((slot) => {
+      const slotEnd = addMinutesToTime(slot, interval)
+      return !busy.some((apt) =>
+        timeRangesOverlap(apt.startTime, apt.endTime, slot, slotEnd)
+      )
+    })
+    .map((startTime) => ({
+      startTime,
+      endTime: addMinutesToTime(startTime, interval),
+    }))
+
+  return {
+    totalSlots: allSlots.length,
+    totalLivres: horarios.length,
+    intervaloMinutos: interval,
+    expedienteInicio: schedule.agendaStartTime,
+    expedienteFim: schedule.agendaEndTime,
+    horarios,
+  }
+}
+
+export async function isSlotAvailable(
+  ctx: AuthContext,
+  doctorId: string,
+  dateStr: string,
+  startTime: string
+) {
+  const normalized = normalizeTimeHHmm(startTime)
+  if (!normalized) {
+    return { disponivel: false, erro: "Horário inválido — use HH:mm" }
   }
 
-  return { startTime: "08:00", endTime: "08:15" }
+  const { horarios, intervaloMinutos } = await listFreeSlots(ctx, doctorId, dateStr)
+  const match = horarios.find((h) => h.startTime === normalized)
+
+  return {
+    disponivel: !!match,
+    horarioSolicitado: normalized,
+    inicio: match?.startTime ?? null,
+    fim: match?.endTime ?? null,
+    intervaloMinutos,
+    horariosProximos: horarios
+      .filter((h) => Math.abs(timeToMinutes(h.startTime) - timeToMinutes(normalized)) <= 90)
+      .slice(0, 6)
+      .map((h) => ({ inicio: h.startTime, fim: h.endTime })),
+  }
+}
+
+export async function findNextFreeSlot(ctx: AuthContext, doctorId: string, dateStr: string) {
+  const { horarios } = await listFreeSlots(ctx, doctorId, dateStr)
+  if (horarios.length > 0) {
+    return { startTime: horarios[0].startTime, endTime: horarios[0].endTime }
+  }
+
+  const schedule = await getClinicSchedule(ctx.clinicId)
+  const fallbackEnd = addMinutesToTime(schedule.agendaStartTime, schedule.slotIntervalMinutes)
+  return { startTime: schedule.agendaStartTime, endTime: fallbackEnd }
 }
 
 export async function sendReminder(

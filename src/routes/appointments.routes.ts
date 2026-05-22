@@ -34,6 +34,15 @@ const appointmentSchema = z.object({
     .optional(),
   notes: z.string().optional().or(z.literal("")),
   generatePaymentLink: z.boolean().optional(),
+  cidCode: z.string().nullable().optional(),
+  cidDescription: z.string().nullable().optional(),
+  cidVersion: z.string().nullable().optional(),
+  mainComplaint: z.string().nullable().optional(),
+  physicalExam: z.string().nullable().optional(),
+  currentIllnessHistory: z.string().nullable().optional(),
+  historyAndAntecedents: z.string().nullable().optional(),
+  conduct: z.string().nullable().optional(),
+  prescriptionSummary: z.string().nullable().optional(),
   procedures: z.array(procedureLineSchema).optional(),
 })
 

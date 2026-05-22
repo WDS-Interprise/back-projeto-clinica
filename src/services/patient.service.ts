@@ -6,7 +6,15 @@ import {
 } from "@/lib/duplicate-validation.js"
 import type { AuthContext } from "@/types/index.js"
 
-const CLINICAL_FIELDS = ["allergies", "medications", "bloodType"] as const
+const CLINICAL_FIELDS = [
+  "allergies",
+  "medications",
+  "bloodType",
+  "clinicalHistory",
+  "surgicalHistory",
+  "familyHistory",
+  "habits",
+] as const
 
 export async function list(
   ctx: AuthContext,

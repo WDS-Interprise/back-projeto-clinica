@@ -335,3 +335,90 @@ export async function getMe(userId: string, clinicIdFromJwt?: string) {
     provisionedByClinic,
   }
 }
+
+export async function updateMe(
+  userId: string,
+  clinicIdFromJwt: string | undefined,
+  data: {
+    name?: string
+    email?: string
+    phone?: string
+    gender?: "M" | "F" | "O"
+    password?: string
+    currentPassword?: string
+  }
+) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      password: true,
+      doctorProfile: { select: { id: true } },
+    },
+  })
+
+  if (!user) {
+    throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+  }
+
+  if (data.name !== undefined || data.email !== undefined) {
+    const { validateUserUpdate } = await import("@/lib/duplicate-validation.js")
+    await validateUserUpdate(userId, {
+      name: data.name ?? user.name,
+      email: data.email ?? user.email,
+    })
+  }
+
+  if (data.password) {
+    if (!data.currentPassword) {
+      throw Object.assign(new Error("Senha atual obrigatoria"), {
+        code: "CURRENT_PASSWORD_REQUIRED",
+      })
+    }
+    const valid = await bcrypt.compare(data.currentPassword, user.password)
+    if (!valid) {
+      throw Object.assign(new Error("Senha atual incorreta"), {
+        code: "INVALID_CURRENT_PASSWORD",
+      })
+    }
+    const { validatePassword } = await import("@/lib/password.js")
+    const pwdError = validatePassword(data.password)
+    if (pwdError) {
+      throw Object.assign(new Error(pwdError), { code: "INVALID_PASSWORD" })
+    }
+  }
+
+  const userUpdate: {
+    name?: string
+    email?: string
+    phone?: string | null
+    gender?: "M" | "F" | "O"
+    password?: string
+  } = {}
+
+  if (data.name !== undefined) userUpdate.name = data.name.trim()
+  if (data.email !== undefined) userUpdate.email = data.email.trim().toLowerCase()
+  if (data.phone !== undefined) userUpdate.phone = data.phone.trim() || null
+  if (data.gender !== undefined) userUpdate.gender = data.gender
+  if (data.password) userUpdate.password = await bcrypt.hash(data.password, 10)
+
+  await prisma.$transaction(async (tx) => {
+    if (Object.keys(userUpdate).length > 0) {
+      await tx.user.update({ where: { id: userId }, data: userUpdate })
+    }
+
+    if (user.doctorProfile && (data.name !== undefined || data.email !== undefined)) {
+      await tx.doctor.update({
+        where: { id: user.doctorProfile.id },
+        data: {
+          ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+          ...(data.email !== undefined ? { email: data.email.trim().toLowerCase() } : {}),
+        },
+      })
+    }
+  })
+
+  return getMe(userId, clinicIdFromJwt)
+}

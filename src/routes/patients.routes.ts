@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify"
 import { z } from "zod"
-import { list, getById, create, update, remove } from "@/controllers/patients.controller.js"
+import { list, getById, getHistory, create, update, remove } from "@/controllers/patients.controller.js"
 
 const patientSchema = z.object({
   name: z.string().min(2),
@@ -13,6 +13,10 @@ const patientSchema = z.object({
   bloodType: z.string().optional().or(z.literal("")),
   allergies: z.string().optional().or(z.literal("")),
   medications: z.string().optional().or(z.literal("")),
+  clinicalHistory: z.string().optional().or(z.literal("")),
+  surgicalHistory: z.string().optional().or(z.literal("")),
+  familyHistory: z.string().optional().or(z.literal("")),
+  habits: z.string().optional().or(z.literal("")),
   phoneHome: z.string().optional().or(z.literal("")),
   whatsapp: z.string().optional().or(z.literal("")),
   insurancePlan: z.string().optional(),
@@ -41,6 +45,7 @@ export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
 
   app.get("/", list)
+  app.get("/:id/history", getHistory)
   app.get("/:id", getById)
   app.post("/", { preHandler: [validate(patientSchema)] }, create)
   app.put("/:id", update)

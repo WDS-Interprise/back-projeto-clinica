@@ -27,3 +27,5 @@ prisma/*.db
 *.sw?
 # Sessões Baileys (credenciais locais por conexão)
 data/whatsapp-sessions/
+storage/prescriptions/
+storage/avatars/

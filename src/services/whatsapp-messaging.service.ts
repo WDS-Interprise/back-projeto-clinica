@@ -1,40 +1,60 @@
 import prisma from "@/lib/prisma.js"
 import type { AuthContext } from "@/types/index.js"
 import { WHATSAPP_STATUS } from "@/whatsapp/status.js"
-import { getConnectedSocket, sendTextMessage } from "@/whatsapp/manager.js"
-import { normalizeWhatsappPhone, phoneToJid, tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
-import { persistOutboundMessage } from "@/whatsapp/message-store.js"
+import { getConnectedSocket, sendDocumentMessage, sendTextMessage } from "@/whatsapp/manager.js"
+import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, resolvePatientWhatsappDigits, tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
+import { ensureChat, persistOutboundMessage } from "@/whatsapp/message-store.js"
 import { getPatientWhatsappDigits } from "@/services/whatsapp-patient-phone.service.js"
+import { ensureConnectionRuntime } from "@/services/whatsapp.service.js"
 
-export async function resolveDefaultConnectionId(clinicId: string): Promise<string | null> {
+const USABLE_CONNECTION_STATUSES = [
+  WHATSAPP_STATUS.CONNECTED,
+  WHATSAPP_STATUS.CONNECTING,
+] as const
+
+async function findUsableConnection(clinicId: string, connectionId?: string) {
+  const baseWhere = {
+    clinicId,
+    status: { in: [...USABLE_CONNECTION_STATUSES] },
+    lastConnectedAt: { not: null },
+  }
+
+  if (connectionId) {
+    return prisma.whatsappConnection.findFirst({
+      where: { ...baseWhere, id: connectionId },
+    })
+  }
+
   const settings = await prisma.clinicWhatsappSettings.findUnique({
     where: { clinicId },
   })
+
   if (settings?.defaultConnectionId) {
     const preferred = await prisma.whatsappConnection.findFirst({
-      where: {
-        id: settings.defaultConnectionId,
-        clinicId,
-        status: WHATSAPP_STATUS.CONNECTED,
-      },
+      where: { ...baseWhere, id: settings.defaultConnectionId },
     })
-    if (preferred) return preferred.id
+    if (preferred) return preferred
   }
-  const connected = await prisma.whatsappConnection.findFirst({
-    where: { clinicId, status: WHATSAPP_STATUS.CONNECTED },
+
+  return prisma.whatsappConnection.findFirst({
+    where: baseWhere,
     orderBy: { lastConnectedAt: "desc" },
   })
-  return connected?.id ?? null
+}
+
+export async function resolveDefaultConnectionId(clinicId: string): Promise<string | null> {
+  const conn = await findUsableConnection(clinicId)
+  return conn?.id ?? null
 }
 
 export async function assertConnectionForClinic(clinicId: string, connectionId?: string) {
-  const id = connectionId ?? (await resolveDefaultConnectionId(clinicId))
-  if (!id) throw new Error("NO_WHATSAPP_CONNECTION")
-  const conn = await prisma.whatsappConnection.findFirst({
-    where: { id, clinicId, status: WHATSAPP_STATUS.CONNECTED },
-  })
-  if (!conn) throw new Error("WHATSAPP_NOT_CONNECTED")
-  if (!getConnectedSocket(conn.id)) throw new Error("WHATSAPP_SOCKET_OFFLINE")
+  const conn = await findUsableConnection(clinicId, connectionId)
+  if (!conn) throw new Error("NO_WHATSAPP_CONNECTION")
+
+  const runtimeReady = await ensureConnectionRuntime(conn.id)
+  if (!runtimeReady || !getConnectedSocket(conn.id)) {
+    throw new Error("WHATSAPP_SOCKET_OFFLINE")
+  }
   return conn
 }
 
@@ -76,9 +96,11 @@ async function reconcileChatPhoneDigits(clinicId: string) {
 export async function listChats(ctx: AuthContext, params?: { patientId?: string }) {
   if (!ctx.clinicId) return []
   await reconcileChatPhoneDigits(ctx.clinicId)
+  const activeConnectionId = await resolveDefaultConnectionId(ctx.clinicId)
   return prisma.whatsappChat.findMany({
     where: {
       clinicId: ctx.clinicId,
+      ...(activeConnectionId ? { connectionId: activeConnectionId } : {}),
       ...(params?.patientId ? { patientId: params.patientId } : {}),
     },
     orderBy: { lastMessageAt: "desc" },
@@ -108,29 +130,128 @@ export async function listChatMessages(ctx: AuthContext, chatId: string, limit =
   return { chat, messages }
 }
 
+export async function createChat(
+  ctx: AuthContext,
+  params: { patientId?: string; phone?: string }
+) {
+  if (!ctx.clinicId) throw new Error("NO_CLINIC")
+
+  const connectionId = await resolveDefaultConnectionId(ctx.clinicId)
+  if (!connectionId) throw new Error("NO_WHATSAPP_CONNECTION")
+
+  if (!params.patientId && !params.phone?.trim()) {
+    throw new Error("INVALID_INPUT")
+  }
+
+  let patientId: string | null = params.patientId ?? null
+  let phoneDigits: string
+
+  if (patientId) {
+    const patient = await prisma.patient.findFirst({
+      where: { id: patientId, clinicId: ctx.clinicId, active: true },
+      select: { id: true, phone: true, whatsapp: true },
+    })
+    if (!patient) throw new Error("PATIENT_NOT_FOUND")
+    phoneDigits = resolvePatientWhatsappDigits(patient)
+  } else {
+    phoneDigits = normalizeWhatsappPhone(params.phone!)
+  }
+
+  const remoteJid = phoneToJid(phoneDigits)
+  const chat = await ensureChat({
+    connectionId,
+    clinicId: ctx.clinicId,
+    remoteJid,
+    phoneDigits,
+    patientId,
+  })
+
+  return prisma.whatsappChat.findUniqueOrThrow({
+    where: { id: chat.id },
+    include: {
+      patient: { select: { id: true, name: true, phone: true, whatsapp: true } },
+      connection: { select: { id: true, name: true, status: true } },
+    },
+  })
+}
+
 export async function sendMessageNow(params: {
   clinicId: string
   connectionId: string
-  to: string
+  to?: string
+  remoteJid?: string
   body: string
   patientId?: string | null
   templateId?: string | null
   appointmentId?: string | null
 }) {
   const conn = await assertConnectionForClinic(params.clinicId, params.connectionId)
-  const digits = params.patientId
-    ? await getPatientWhatsappDigits(params.clinicId, params.patientId)
-    : normalizeWhatsappPhone(params.to)
+
+  let resolvedJid = params.remoteJid
+  if (!resolvedJid && params.to?.trim()) {
+    const chat = await prisma.whatsappChat.findFirst({
+      where: {
+        connectionId: conn.id,
+        OR: [{ phoneDigits: params.to.trim() }, { remoteJid: params.to.trim() }],
+      },
+      select: { remoteJid: true },
+    })
+    resolvedJid = chat?.remoteJid
+  }
+
+  const jid = resolveOutboundJid({
+    remoteJid: resolvedJid,
+    to:
+      params.to?.trim() ??
+      (params.patientId
+        ? await getPatientWhatsappDigits(params.clinicId, params.patientId)
+        : undefined),
+  })
+
+  const phoneDigits = tryNormalizeWhatsappPhone(params.to ?? "") ?? jid.split("@")[0]?.replace(/\D/g, "") ?? ""
+
+  const { messageId } = await sendTextMessage(conn.id, jid, params.body)
+
+  await persistOutboundMessage({
+    connectionId: conn.id,
+    clinicId: params.clinicId,
+    remoteJid: jid,
+    phoneDigits,
+    text: params.body,
+    patientId: params.patientId,
+    waMessageId: messageId,
+  })
+
+  return { connectionId: conn.id, jid, messageId }
+}
+
+export async function sendDocumentNow(params: {
+  clinicId: string
+  connectionId: string
+  to: string
+  buffer: Buffer
+  fileName: string
+  mimetype: string
+  caption?: string
+  patientId?: string | null
+  appointmentId?: string | null
+}) {
+  const conn = await assertConnectionForClinic(params.clinicId, params.connectionId)
+  const digits = normalizeWhatsappPhone(params.to)
   const jid = phoneToJid(digits)
 
-  const { messageId } = await sendTextMessage(conn.id, digits, params.body)
+  const { messageId } = await sendDocumentMessage(conn.id, digits, params.buffer, {
+    fileName: params.fileName,
+    mimetype: params.mimetype,
+    caption: params.caption,
+  })
 
   await persistOutboundMessage({
     connectionId: conn.id,
     clinicId: params.clinicId,
     remoteJid: jid,
     phoneDigits: digits,
-    text: params.body,
+    text: params.caption ?? `[Documento] ${params.fileName}`,
     patientId: params.patientId,
     waMessageId: messageId,
   })
@@ -167,10 +288,30 @@ export async function processOutboxItem(outboxId: string) {
   const item = await prisma.whatsappOutbox.findUnique({ where: { id: outboxId } })
   if (!item || item.status !== "PENDING") return
 
+  let connectionId = item.connectionId
+  const linked = await prisma.whatsappConnection.findFirst({
+    where: { id: connectionId, clinicId: item.clinicId, status: WHATSAPP_STATUS.CONNECTED },
+  })
+  if (!linked) {
+    const fallback = await resolveDefaultConnectionId(item.clinicId)
+    if (!fallback) {
+      await prisma.whatsappOutbox.update({
+        where: { id: outboxId },
+        data: {
+          status: "FAILED",
+          attempts: { increment: 1 },
+          errorMessage: "WHATSAPP_NOT_CONNECTED",
+        },
+      })
+      return false
+    }
+    connectionId = fallback
+  }
+
   try {
     await sendMessageNow({
       clinicId: item.clinicId,
-      connectionId: item.connectionId,
+      connectionId,
       to: item.to,
       body: item.body,
       appointmentId: item.appointmentId,
@@ -218,18 +359,46 @@ export async function sendFromContext(
     connectionId?: string
     patientId?: string
     templateId?: string
+    remoteJid?: string
   }
 ) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
   const conn = await assertConnectionForClinic(ctx.clinicId, data.connectionId)
-  return sendMessageNow({
+
+  let remoteJid = data.remoteJid
+  if (!remoteJid && data.to?.trim()) {
+    const chat = await prisma.whatsappChat.findFirst({
+      where: {
+        clinicId: ctx.clinicId,
+        connectionId: conn.id,
+        OR: [{ phoneDigits: data.to.trim() }, { remoteJid: data.to.trim() }],
+      },
+      select: { remoteJid: true, phoneDigits: true },
+    })
+    remoteJid = chat?.remoteJid
+  }
+
+  const result = await sendMessageNow({
     clinicId: ctx.clinicId,
     connectionId: conn.id,
     to: data.to,
+    remoteJid,
     body: data.message,
     patientId: data.patientId,
     templateId: data.templateId,
   })
+
+  const pauseDigits =
+    tryNormalizeWhatsappPhone(data.to) ?? remoteJid?.split("@")[0] ?? data.to
+  await prisma.whatsappChat.updateMany({
+    where: {
+      clinicId: ctx.clinicId,
+      connectionId: conn.id,
+      OR: [{ phoneDigits: pauseDigits }, ...(remoteJid ? [{ remoteJid }] : [])],
+    },
+    data: { aiPaused: true },
+  })
+  return result
 }
 
 export async function getSettings(ctx: AuthContext) {
@@ -260,12 +429,16 @@ export async function updateSettings(
     defaultConnectionId?: string | null
     reminderOffsets?: number[]
     autoRemindersEnabled?: boolean
+    aiAssistantEnabled?: boolean
+    aiAutoReplyEnabled?: boolean
   }
 ) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
   const patch: Record<string, unknown> = {}
   if (data.defaultConnectionId !== undefined) patch.defaultConnectionId = data.defaultConnectionId
   if (data.autoRemindersEnabled !== undefined) patch.autoRemindersEnabled = data.autoRemindersEnabled
+  if (data.aiAssistantEnabled !== undefined) patch.aiAssistantEnabled = data.aiAssistantEnabled
+  if (data.aiAutoReplyEnabled !== undefined) patch.aiAutoReplyEnabled = data.aiAutoReplyEnabled
   if (data.reminderOffsets !== undefined) {
     patch.reminderOffsetsJson = JSON.stringify(
       data.reminderOffsets.filter((h) => h > 0).sort((a, b) => b - a)

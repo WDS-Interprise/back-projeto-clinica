@@ -18,6 +18,8 @@ import {
   startPairingConnection,
   startQrConnection,
   stopRuntime,
+  tearDownConnection,
+  getConnectedSocket,
 } from "@/whatsapp/manager.js"
 
 function mapRow(row: {
@@ -86,26 +88,65 @@ function makeUpdater(connectionId: string) {
       patch.qrCode = null
       patch.pairingCode = null
     }
-    await whatsappDb.update({
+    const { count } = await whatsappDb.updateMany({
       where: { id: connectionId },
       data: patch,
     })
+    if (count === 0) {
+      tearDownConnection(connectionId)
+    }
   }
 }
 
-/** Retoma sockets Baileys para conexões marcadas como CONNECTED no banco. */
+function isResumableStatus(status: string, lastConnectedAt: Date | null): boolean {
+  if (status === WHATSAPP_STATUS.CONNECTED) return true
+  return status === WHATSAPP_STATUS.CONNECTING && lastConnectedAt != null
+}
+
+/** Reabre sessão Baileys em memória quando o banco diz CONNECTED mas o socket caiu (ex.: restart). */
+export async function ensureConnectionRuntime(connectionId: string): Promise<boolean> {
+  if (isRuntimeActive(connectionId)) return true
+
+  const row = await whatsappDb.findUnique({
+    where: { id: connectionId },
+    select: { status: true, name: true, lastConnectedAt: true },
+  })
+  if (!row || !isResumableStatus(row.status, row.lastConnectedAt)) return false
+
+  try {
+    await resumeConnectedSession(connectionId, makeUpdater(connectionId))
+    for (let i = 0; i < 40; i++) {
+      if (isRuntimeActive(connectionId) && getConnectedSocket(connectionId)) return true
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return isRuntimeActive(connectionId) && !!getConnectedSocket(connectionId)
+  } catch (err) {
+    console.error(`[WhatsApp] falha ao retomar runtime ${row?.name ?? connectionId}:`, err)
+    return false
+  }
+}
+
+/** Retoma sockets Baileys para conexões com sessão salva (CONNECTED ou CONNECTING travado). */
 export async function resumeWhatsappSessionsOnBoot() {
   const rows = await whatsappDb.findMany({
-    where: { status: WHATSAPP_STATUS.CONNECTED },
-    select: { id: true, name: true },
+    where: {
+      OR: [
+        { status: WHATSAPP_STATUS.CONNECTED },
+        {
+          status: WHATSAPP_STATUS.CONNECTING,
+          lastConnectedAt: { not: null },
+        },
+      ],
+    },
+    select: { id: true, name: true, status: true },
   })
   for (const row of rows) {
     if (isRuntimeActive(row.id)) continue
-    try {
-      await resumeConnectedSession(row.id, makeUpdater(row.id))
+    const ok = await ensureConnectionRuntime(row.id)
+    if (ok) {
       console.log(`[WhatsApp] sessão retomada: ${row.name} (${row.id})`)
-    } catch (err) {
-      console.error(`[WhatsApp] falha ao retomar ${row.name}:`, err)
+    } else if (row.status === WHATSAPP_STATUS.CONNECTING) {
+      console.warn(`[WhatsApp] não foi possível retomar ${row.name} — reconecte em Configurações`)
     }
   }
 }
@@ -230,9 +271,12 @@ export async function logout(ctx: AuthContext, connectionId: string) {
 }
 
 export async function removeConnection(ctx: AuthContext, connectionId: string) {
-  await assertConnectionAccess(ctx, connectionId)
-  stopRuntime(connectionId)
-  await logoutRuntime(connectionId)
+  const row = await assertConnectionAccess(ctx, connectionId)
+  tearDownConnection(connectionId)
   await clearDbAuthState(connectionId)
+  await prisma.clinicWhatsappSettings.updateMany({
+    where: { clinicId: row.clinicId, defaultConnectionId: connectionId },
+    data: { defaultConnectionId: null },
+  })
   await whatsappDb.delete({ where: { id: connectionId } })
 }

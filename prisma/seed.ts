@@ -1,5 +1,8 @@
 import { PrismaClient } from "@prisma/client"
 import bcrypt from "bcryptjs"
+import { seedCid10 } from "./seed-cid10.js"
+import { seedCid11 } from "./seed-cid11.js"
+import { seedCidInss } from "./seed-cid-inss.js"
 
 const prisma = new PrismaClient()
 
@@ -323,6 +326,10 @@ async function main() {
       })
     }
   }
+
+  await seedCid10(prisma)
+  await seedCid11(prisma)
+  await seedCidInss(prisma)
 
   console.log(`  Clinic: ${clinic.name}`)
   console.log(`  Users: admin, doctor, receptionist`)

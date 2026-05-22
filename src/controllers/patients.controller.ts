@@ -41,6 +41,23 @@ export async function getById(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+export async function getHistory(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    const { id } = req.params as { id: string }
+    const history = await import("@/services/patient-history.service.js").then((m) =>
+      m.getPatientHistory(ctx, id)
+    )
+    if (!history) {
+      return reply.status(404).send({ error: "Paciente nao encontrado" })
+    }
+    return reply.send(history)
+  } catch (error) {
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao buscar historico do paciente" })
+  }
+}
+
 export async function create(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)

@@ -11,11 +11,14 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:setup": "prisma db push && npm run db:seed",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "import:cid": "tsx src/scripts/import-cid.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1052.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.1.0",
+    "@fastify/multipart": "^10.0.0",
     "@hapi/boom": "^10.0.1",
     "@prisma/client": "^6.7.0",
     "@whiskeysockets/baileys": "^7.0.0-rc12",
@@ -25,6 +28,7 @@
     "fastify": "^5.8.5",
     "jsonwebtoken": "^9.0.2",
     "pino": "^10.3.1",
+    "puppeteer": "^25.0.4",
     "qrcode": "^1.5.4",
     "zod": "^4.4.3"
   },
