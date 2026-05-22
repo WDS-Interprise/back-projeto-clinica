@@ -52,6 +52,33 @@ export function phoneToJid(digits: string): string {
   return `${d}@s.whatsapp.net`
 }
 
+/** JID Baileys (@s.whatsapp.net ou @lid — contatos com privacidade). */
+export function isWhatsappJid(value: string): boolean {
+  return value.includes("@")
+}
+
+export function isLidJid(jid: string): boolean {
+  return jid.endsWith("@lid")
+}
+
+/** Resolve destino de envio: JID completo ou telefone normalizado. */
+export function resolveOutboundJid(input: { remoteJid?: string | null; to?: string | null }): string {
+  const jid = input.remoteJid?.trim()
+  if (jid && isWhatsappJid(jid)) return jid
+
+  const to = input.to?.trim()
+  if (!to) throw new Error("INVALID_PHONE")
+
+  if (isWhatsappJid(to)) return to
+
+  try {
+    return phoneToJid(normalizeWhatsappPhone(to))
+  } catch {
+    if (jid) return jid
+    throw new Error("INVALID_PHONE")
+  }
+}
+
 export function jidToPhoneDigits(jid: string): string {
   const user = jid.split("@")[0]?.split(":")[0] ?? ""
   return user.replace(/\D/g, "")

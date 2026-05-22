@@ -4,6 +4,8 @@ import type { JwtPayload } from "@/types/index.js"
 import * as whatsappService from "@/services/whatsapp.service.js"
 import * as messagingService from "@/services/whatsapp-messaging.service.js"
 import * as templateService from "@/services/whatsapp-template.service.js"
+import { setChatAiPaused } from "@/services/whatsapp-ai.service.js"
+import { isOpenRouterConfigured } from "@/lib/openrouter.js"
 
 async function ctxFromReq(req: FastifyRequest) {
   const payload = req.user as JwtPayload
@@ -146,6 +148,14 @@ function mapMessagingError(error: unknown, reply: FastifyReply) {
     reply.status(404).send({ error: "Paciente não encontrado" })
     return true
   }
+  if (m === "NO_PHONE") {
+    reply.status(400).send({ error: "Paciente sem telefone ou WhatsApp cadastrado" })
+    return true
+  }
+  if (m === "INVALID_INPUT") {
+    reply.status(400).send({ error: "Informe um paciente ou número de telefone" })
+    return true
+  }
   return false
 }
 
@@ -157,6 +167,22 @@ export async function listChats(req: FastifyRequest, reply: FastifyReply) {
   } catch (error: unknown) {
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao listar conversas" })
+  }
+}
+
+export async function createChat(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    const body = req.body as { patientId?: string; phone?: string }
+    const chat = await messagingService.createChat(ctx, {
+      patientId: body.patientId,
+      phone: body.phone,
+    })
+    return reply.status(201).send(chat)
+  } catch (error: unknown) {
+    if (mapMessagingError(error, reply)) return
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao criar conversa" })
   }
 }
 
@@ -181,6 +207,7 @@ export async function sendMessage(req: FastifyRequest, reply: FastifyReply) {
       message?: string
       patientId?: string
       templateId?: string
+      remoteJid?: string
     }
     if (!body?.to?.trim() || !body?.message?.trim()) {
       return reply.status(400).send({ error: "Informe destino e mensagem" })
@@ -191,6 +218,7 @@ export async function sendMessage(req: FastifyRequest, reply: FastifyReply) {
       connectionId: id,
       patientId: body.patientId,
       templateId: body.templateId,
+      remoteJid: body.remoteJid,
     })
     return reply.send(result)
   } catch (error: unknown) {
@@ -262,7 +290,8 @@ export async function deleteTemplate(req: FastifyRequest, reply: FastifyReply) {
 export async function getSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
-    return reply.send(await messagingService.getSettings(ctx))
+    const settings = await messagingService.getSettings(ctx)
+    return reply.send({ ...settings, openRouterConfigured: isOpenRouterConfigured() })
   } catch (error: unknown) {
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao carregar configurações" })
@@ -276,12 +305,35 @@ export async function updateSettings(req: FastifyRequest, reply: FastifyReply) {
       defaultConnectionId?: string | null
       reminderOffsets?: number[]
       autoRemindersEnabled?: boolean
+      aiAssistantEnabled?: boolean
+      aiAutoReplyEnabled?: boolean
     }
     await messagingService.updateSettings(ctx, body)
-    return reply.send(await messagingService.getSettings(ctx))
+    const settings = await messagingService.getSettings(ctx)
+    return reply.send({ ...settings, openRouterConfigured: isOpenRouterConfigured() })
   } catch (error: unknown) {
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao salvar configurações" })
+  }
+}
+
+export async function updateChatAi(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    const { chatId } = req.params as { chatId: string }
+    const body = req.body as { aiPaused?: boolean }
+    if (body.aiPaused === undefined) {
+      return reply.status(400).send({ error: "Informe aiPaused" })
+    }
+    if (!ctx.clinicId) return reply.status(400).send({ error: "Clínica não identificada" })
+    const chat = await setChatAiPaused(chatId, ctx.clinicId, body.aiPaused)
+    return reply.send(chat)
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Conversa não encontrada" })
+    }
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao atualizar assistente" })
   }
 }
 

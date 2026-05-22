@@ -11,7 +11,7 @@ import prisma from "@/lib/prisma.js"
 import { WHATSAPP_STATUS, type WhatsappStatus } from "./status.js"
 import { clearDbAuthState, useDbAuthState } from "./auth-db.js"
 import { handleMessagesUpsert } from "./message-store.js"
-import { normalizeWhatsappPhone, phoneToJid } from "./phone.js"
+import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, tryNormalizeWhatsappPhone } from "./phone.js"
 
 export { normalizeWhatsappPhone } from "./phone.js"
 
@@ -24,6 +24,8 @@ const runtime = new Map<string, RuntimeSession>()
 const sessionMode = new Map<string, "qr" | "pairing">()
 const reconnecting = new Set<string>()
 const reconnectAttempts = new Map<string, number>()
+/** Conexões removidas/excluídas — handlers Baileys não devem mais persistir no banco. */
+const tornDownConnections = new Set<string>()
 const MAX_RECONNECT_ATTEMPTS = 8
 
 export type ConnectionRuntimeUpdate = {
@@ -39,7 +41,14 @@ async function patchConnection(
   onUpdate: (data: ConnectionRuntimeUpdate) => Promise<void>,
   data: ConnectionRuntimeUpdate
 ) {
+  if (tornDownConnections.has(connectionId)) return
   await onUpdate(data)
+}
+
+/** Encerra runtime e impede updates no banco (ex.: antes de excluir a conexão). */
+export function tearDownConnection(connectionId: string) {
+  tornDownConnections.add(connectionId)
+  stopRuntime(connectionId)
 }
 
 function getStatusCode(lastDisconnect: unknown): number | undefined {
@@ -141,16 +150,39 @@ export function getConnectedSocket(connectionId: string): WASocket | null {
 
 export async function sendTextMessage(
   connectionId: string,
-  phoneInput: string,
+  destination: string,
   text: string
 ): Promise<{ jid: string; messageId?: string }> {
   const sock = getConnectedSocket(connectionId)
   if (!sock) throw new Error("WHATSAPP_SOCKET_OFFLINE")
 
-  const digits = normalizeWhatsappPhone(phoneInput)
-  const jid = phoneToJid(digits)
+  await waitSocketOpen(sock)
+
+  const jid = resolveOutboundJid({ to: destination, remoteJid: destination.includes("@") ? destination : undefined })
 
   const result = await sock.sendMessage(jid, { text })
+  return { jid, messageId: result?.key?.id ?? undefined }
+}
+
+export async function sendDocumentMessage(
+  connectionId: string,
+  destination: string,
+  buffer: Buffer,
+  opts: { fileName: string; mimetype: string; caption?: string }
+): Promise<{ jid: string; messageId?: string }> {
+  const sock = getConnectedSocket(connectionId)
+  if (!sock) throw new Error("WHATSAPP_SOCKET_OFFLINE")
+
+  await waitSocketOpen(sock)
+
+  const jid = resolveOutboundJid({ to: destination, remoteJid: destination.includes("@") ? destination : undefined })
+
+  const result = await sock.sendMessage(jid, {
+    document: buffer,
+    mimetype: opts.mimetype,
+    fileName: opts.fileName,
+    caption: opts.caption,
+  })
   return { jid, messageId: result?.key?.id ?? undefined }
 }
 
@@ -179,7 +211,7 @@ function scheduleReconnect(
 
   void (async () => {
     await delay(waitMs)
-    if (!reconnecting.has(connectionId)) return
+    if (!reconnecting.has(connectionId) || tornDownConnections.has(connectionId)) return
     try {
       const mode = sessionMode.get(connectionId) ?? "qr"
       await openWhatsAppSession(connectionId, onUpdate, { mode, reconnect: true })
@@ -202,6 +234,7 @@ function bindConnectionHandlers(
   options?: { defaultPhone?: string }
 ) {
   sock.ev.on("connection.update", async (update) => {
+    if (tornDownConnections.has(connectionId)) return
     const { connection, lastDisconnect, qr } = update
 
     if (qr) {

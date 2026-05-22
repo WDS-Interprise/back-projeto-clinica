@@ -1,6 +1,15 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify"
+import multipart from "@fastify/multipart"
 import { z } from "zod"
-import { login, register, me, completeOnboarding } from "@/controllers/auth.controller.js"
+import {
+  login,
+  register,
+  me,
+  meAvatar,
+  uploadMeAvatar,
+  completeOnboarding,
+  updateMe,
+} from "@/controllers/auth.controller.js"
 
 const loginSchema = z.object({
   email: z.string().email("Email invalido"),
@@ -41,7 +50,20 @@ const onboardingSchema = z.object({
   clinicName: z.string().optional(),
 })
 
+const updateMeSchema = z.object({
+  name: z.string().min(2, "Nome deve ter no minimo 2 caracteres").optional(),
+  email: z.string().email("Email invalido").optional(),
+  phone: z.string().optional(),
+  gender: z.enum(["M", "F", "O"]).optional(),
+  password: z.string().optional(),
+  currentPassword: z.string().optional(),
+})
+
 export default async function (app: FastifyInstance) {
+  await app.register(multipart, {
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  })
+
   app.post("/login", { preHandler: [validate(loginSchema)] }, login)
   app.post("/register", { preHandler: [validate(registerSchema)] }, register)
   app.post(
@@ -50,4 +72,7 @@ export default async function (app: FastifyInstance) {
     completeOnboarding
   )
   app.get("/me", { preHandler: [app.auth] }, me)
+  app.get("/me/avatar", { preHandler: [app.auth] }, meAvatar)
+  app.post("/me/avatar", { preHandler: [app.auth] }, uploadMeAvatar)
+  app.patch("/me", { preHandler: [app.auth, validate(updateMeSchema)] }, updateMe)
 }

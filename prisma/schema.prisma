@@ -86,12 +86,46 @@ enum AgendaNoteVisibility {
   ADMIN_ONLY
 }
 
+enum PrescriptionStatus {
+  DRAFT
+  FINALIZED
+  CANCELLED
+}
+
+enum PrescriptionReceiptType {
+  SIMPLE
+  SPECIAL
+}
+
+enum PrescriptionItemType {
+  MEDICATION
+  EXAM
+  VACCINE
+  FREE_TEXT
+}
+
+enum PrescriptionShareChannel {
+  WHATSAPP
+  EMAIL
+}
+
+enum PrescriptionShareStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
 model Clinic {
   id           String        @id @default(cuid())
   name         String
   phone        String?
   email        String?
   active       Boolean       @default(true)
+  agendaStartTime     String   @default("08:00")
+  agendaEndTime       String   @default("17:00")
+  lunchStartTime      String   @default("12:00")
+  lunchEndTime        String   @default("13:00")
+  slotIntervalMinutes Int      @default(30)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   users            UserClinic[]
@@ -103,6 +137,8 @@ model Clinic {
   whatsappTemplates    WhatsappMessageTemplate[]
   whatsappSettings     ClinicWhatsappSettings?
   whatsappChats        WhatsappChat[]
+  prescriptions        Prescription[]
+  prescriptionTemplates PrescriptionTemplate[]
 }
 
 model User {
@@ -125,6 +161,8 @@ model User {
   waitingListCreated   WaitingListEntry[]   @relation("WaitingListCreator")
   agendaNotesCreated   AgendaNote[]         @relation("AgendaNoteCreator")
   whatsappConnections  WhatsappConnection[]
+  prescriptionsCreated Prescription[]       @relation("PrescriptionProfessional")
+  prescriptionTemplates PrescriptionTemplate[]
 }
 
 /// Conexão WhatsApp (Baileys) — uma sessão por registro, vinculada à clínica e ao usuário que conectou.
@@ -153,13 +191,15 @@ model WhatsappConnection {
   @@index([userId])
 }
 
-/// Configuração de WhatsApp por clínica (conexão padrão, lembretes automáticos).
+/// Configuração de WhatsApp por clínica (conexão padrão, lembretes automáticos, assistente IA).
 model ClinicWhatsappSettings {
   id                   String   @id @default(cuid())
   clinicId             String   @unique
   defaultConnectionId  String?
   reminderOffsetsJson  String   @default("[24]")
   autoRemindersEnabled Boolean  @default(true)
+  aiAssistantEnabled   Boolean  @default(false)
+  aiAutoReplyEnabled   Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   clinic               Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
@@ -193,6 +233,8 @@ model WhatsappChat {
   lastMessage   String?
   lastMessageAt DateTime?
   unreadCount   Int                @default(0)
+  aiPaused      Boolean            @default(false)
+  aiContextJson String?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   connection    WhatsappConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
@@ -309,6 +351,10 @@ model Patient {
   bloodType      String?
   allergies      String          @default("")
   medications    String          @default("")
+  clinicalHistory String         @default("")
+  surgicalHistory String         @default("")
+  familyHistory  String          @default("")
+  habits         String          @default("")
   insurancePlan  String          @default("Particular")
   insuranceCard  String?
   notes          String?
@@ -321,6 +367,7 @@ model Patient {
   waitingList    WaitingListEntry[]
   agendaNotes    AgendaNote[]
   whatsappChats  WhatsappChat[]
+  prescriptions  Prescription[]
 }
 
 model Doctor {
@@ -411,6 +458,17 @@ model Appointment {
   paymentLinkUrl      String?
   paymentStatus       PaymentStatus          @default(NONE)
   reminderSentAt      DateTime?
+  startedAt           DateTime?
+  endedAt             DateTime?
+  cidCode             String?
+  cidDescription      String?
+  cidVersion          String?
+  mainComplaint       String?
+  physicalExam        String?
+  currentIllnessHistory String?
+  historyAndAntecedents String?
+  conduct             String?
+  prescriptionSummary String?
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
   clinic              Clinic?                @relation(fields: [clinicId], references: [id])
@@ -421,6 +479,7 @@ model Appointment {
   billing             AppointmentBilling?
   reminderLogs        AppointmentReminderLog[]
   whatsappOutbox      WhatsappOutbox[]
+  prescriptions       Prescription[]
 }
 
 model AppointmentProcedure {
@@ -459,4 +518,211 @@ model MedicalRecord {
   updatedAt    DateTime @updatedAt
   patient      Patient  @relation(fields: [patientId], references: [id])
   doctor       Doctor   @relation(fields: [doctorId], references: [id])
+}
+
+model Cid10 {
+  id            String   @id @default(cuid())
+  codigo        String   @unique
+  descricao     String
+  capitulo      String
+  capituloDesc  String
+  grupo         String
+  grupoDesc     String
+  categoria     String
+  categoriaDesc String
+  tipo          String
+  searchText    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([codigo])
+  @@index([descricao])
+  @@index([capitulo])
+  @@index([grupo])
+  @@index([tipo])
+}
+
+model Cid11 {
+  id               String   @id @default(cuid())
+  codigo           String   @unique
+  descricao        String
+  bloco            String
+  blocoDesc        String
+  capitulo         String
+  capituloDesc     String
+  tipo             String
+  cid10Equivalente String?
+  searchText       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([codigo])
+  @@index([descricao])
+  @@index([capitulo])
+  @@index([bloco])
+  @@index([tipo])
+  @@index([cid10Equivalente])
+}
+
+model CidInss {
+  id            String   @id @default(cuid())
+  codigo        String   @unique
+  temCarencia   Boolean  @default(false)
+  fonteCarencia String?
+  temIrpf       Boolean  @default(false)
+  fonteIrpf     String?
+  temNtep       Boolean  @default(false)
+  fonteNtep     String?
+  cnaesJson     Json?
+  versao        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([codigo])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  clinicId     String?
+  userId       String?
+  module       String
+  action       String
+  entityType   String?
+  entityId     String?
+  description  String
+  metadataJson String?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([clinicId, createdAt])
+  @@index([userId, createdAt])
+}
+
+/// Cache de bulas completas obtidas de fontes oficiais (Anvisa Bulário / metadados Bulapi).
+model BulaCache {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  substanceKey  String
+  substanceName String?
+  source        String
+  payloadJson   String
+  fetchedAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([substanceKey])
+  @@index([fetchedAt])
+}
+
+model Prescription {
+  id               String                  @id @default(cuid())
+  clinicId         String
+  patientId        String
+  professionalId   String
+  appointmentId    String?
+  status           PrescriptionStatus      @default(DRAFT)
+  receiptType      PrescriptionReceiptType @default(SIMPLE)
+  prescriptionDate DateTime                @default(now())
+  showDate         Boolean                 @default(true)
+  notes            String?
+  validationCode   String?
+  accessCode       String?
+  pdfPath          String?
+  signedAt         DateTime?
+  sentAt           DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  clinic           Clinic                  @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patient          Patient                 @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  professional     User                    @relation("PrescriptionProfessional", fields: [professionalId], references: [id])
+  appointment      Appointment?            @relation(fields: [appointmentId], references: [id])
+  items            PrescriptionItem[]
+  shares           PrescriptionShare[]
+  signature        PrescriptionSignature?
+
+  @@index([clinicId, patientId, status])
+  @@index([validationCode])
+}
+
+model PrescriptionItem {
+  id             String               @id @default(cuid())
+  prescriptionId String
+  type           PrescriptionItemType
+  name           String
+  presentation   String?
+  dosage         String?
+  frequency      String?
+  duration       String?
+  quantity       String?
+  instructions   String?
+  continuousUse  Boolean              @default(false)
+  extraJson      String?
+  sortOrder      Int                  @default(0)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  prescription   Prescription         @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@index([prescriptionId, sortOrder])
+}
+
+model PrescriptionTemplate {
+  id             String                     @id @default(cuid())
+  clinicId       String
+  professionalId String
+  name           String
+  description    String?
+  visibility     String                     @default("PRIVATE")
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+  clinic         Clinic                     @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  professional   User                       @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  items          PrescriptionTemplateItem[]
+
+  @@index([clinicId, professionalId])
+}
+
+model PrescriptionTemplateItem {
+  id            String               @id @default(cuid())
+  templateId    String
+  type          PrescriptionItemType
+  name          String
+  presentation  String?
+  dosage        String?
+  frequency     String?
+  duration      String?
+  instructions  String?
+  continuousUse Boolean              @default(false)
+  sortOrder     Int                  @default(0)
+  template      PrescriptionTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId, sortOrder])
+}
+
+model PrescriptionShare {
+  id             String                   @id @default(cuid())
+  prescriptionId String
+  channel        PrescriptionShareChannel
+  recipient      String
+  status         PrescriptionShareStatus  @default(PENDING)
+  sentAt         DateTime?
+  errorMessage   String?
+  createdAt      DateTime                 @default(now())
+  prescription   Prescription             @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@index([prescriptionId])
+}
+
+/// Stub para assinatura digital (fase futura).
+model PrescriptionSignature {
+  id              String       @id @default(cuid())
+  prescriptionId  String       @unique
+  provider        String?
+  certificateType String?
+  status          String       @default("PENDING")
+  signedPdfUrl    String?
+  signatureHash   String?
+  signedAt        DateTime?
+  errorMessage    String?
+  createdAt       DateTime     @default(now())
+  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
 }

@@ -10,6 +10,20 @@ function extractText(message: proto.IMessage | null | undefined): string {
   if (!message) return ""
   const content = extractMessageContent(message)
   if (!content) return ""
+
+  if (content.ephemeralMessage?.message) {
+    return extractText(content.ephemeralMessage.message)
+  }
+  if (content.viewOnceMessage?.message) {
+    return extractText(content.viewOnceMessage.message)
+  }
+  if (content.viewOnceMessageV2?.message) {
+    return extractText(content.viewOnceMessageV2.message)
+  }
+  if (content.documentWithCaptionMessage?.message) {
+    return extractText(content.documentWithCaptionMessage.message)
+  }
+
   const type = getContentType(content)
   if (type === "conversation" && content.conversation) return content.conversation
   if (type === "extendedTextMessage" && content.extendedTextMessage?.text) {
@@ -19,7 +33,13 @@ function extractText(message: proto.IMessage | null | undefined): string {
   if (type === "videoMessage") return content.videoMessage?.caption || "[vídeo]"
   if (type === "audioMessage") return "[áudio]"
   if (type === "documentMessage") {
-    return content.documentMessage?.fileName || "[documento]"
+    return content.documentMessage?.caption || content.documentMessage?.fileName || "[documento]"
+  }
+  if (type === "buttonsResponseMessage" && content.buttonsResponseMessage?.selectedDisplayText) {
+    return content.buttonsResponseMessage.selectedDisplayText
+  }
+  if (type === "listResponseMessage" && content.listResponseMessage?.title) {
+    return content.listResponseMessage.title
   }
   return "[mensagem]"
 }
@@ -153,7 +173,25 @@ export async function persistInboundMessage(params: {
     },
   })
 
-  return { chat, message: msg }
+  const result = { chat, message: msg }
+
+  if (!params.fromMe) {
+    void import("@/services/whatsapp-ai.service.js")
+      .then(({ handleInboundForAi }) =>
+        handleInboundForAi({
+          connectionId: params.connectionId,
+          clinicId: params.clinicId,
+          chatId: chat.id,
+          remoteJid: chat.remoteJid,
+          phoneDigits: chat.phoneDigits,
+          patientId: chat.patientId,
+          inboundText: params.text,
+        })
+      )
+      .catch((err) => console.error("[WhatsApp AI] falha ao enfileirar:", err))
+  }
+
+  return result
 }
 
 export async function persistOutboundMessage(params: {

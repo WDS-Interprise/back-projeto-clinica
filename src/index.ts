@@ -16,7 +16,15 @@ import userRoutes from "@/routes/users.routes.js"
 import clinicRoutes from "@/routes/clinics.routes.js"
 import waitingListRoutes from "@/routes/waiting-list.routes.js"
 import agendaNotesRoutes from "@/routes/agenda-notes.routes.js"
+import outrosRoutes from "@/routes/outros.routes.js"
+import cid10Routes from "@/routes/cid10.routes.js"
+import cid11Routes from "@/routes/cid11.routes.js"
+import cidRoutes from "@/routes/cid.routes.js"
 import whatsappRoutes from "@/routes/whatsapp.routes.js"
+import prescriptionsRoutes, { publicPrescriptionRoutes } from "@/routes/prescriptions.routes.js"
+import medicamentosRoutes from "@/routes/medicamentos.routes.js"
+import examesRoutes from "@/routes/exames.routes.js"
+import vacinasRoutes from "@/routes/vacinas.routes.js"
 import { JWT_SECRET, PORT } from "@/lib/env.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
 import { resumeWhatsappSessionsOnBoot } from "@/services/whatsapp.service.js"
@@ -93,7 +101,16 @@ await app.register(userRoutes, { prefix: "/api/users" })
 await app.register(clinicRoutes, { prefix: "/api/clinics" })
 await app.register(waitingListRoutes, { prefix: "/api/waiting-list" })
 await app.register(agendaNotesRoutes, { prefix: "/api/agenda-notes" })
+await app.register(outrosRoutes, { prefix: "/api/outros" })
+await app.register(cid10Routes, { prefix: "/api/cid10" })
+await app.register(cid11Routes, { prefix: "/api/cid11" })
+await app.register(cidRoutes, { prefix: "/api/cid" })
 await app.register(whatsappRoutes, { prefix: "/api/whatsapp" })
+await app.register(prescriptionsRoutes, { prefix: "/api/prescriptions" })
+await app.register(medicamentosRoutes, { prefix: "/api/medicamentos" })
+await app.register(examesRoutes, { prefix: "/api/exames" })
+await app.register(vacinasRoutes, { prefix: "/api/vacinas" })
+await app.register(publicPrescriptionRoutes, { prefix: "/api/public" })
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
   console.log(`[ClinMax API] running on http://localhost:${PORT}`)
