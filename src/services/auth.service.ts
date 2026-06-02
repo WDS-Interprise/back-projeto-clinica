@@ -54,7 +54,31 @@ export async function login(email: string, password: string) {
 
   const clinics = await loadUserClinics(user.id)
   if (clinics.length === 0) {
-    throw Object.assign(new Error("NO_CLINIC"), { code: "NO_CLINIC" })
+    const permissions = getPermissionsForRole(user.role)
+    const token = generateToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      clinicId: "none",
+    })
+
+    return {
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isAccountAdmin: user.isAccountAdmin,
+        doctorId: user.doctorProfile?.id,
+      },
+      clinicId: null,
+      clinics: [],
+      permissions,
+      redirectPath: "/dashboard",
+      needsOnboarding: true,
+      provisionedByClinic: false,
+    }
   }
 
   const clinicId = clinics[0].id
@@ -156,7 +180,15 @@ const ROLE_LABEL_MAP: Record<string, "ADMIN" | "DOCTOR" | "RECEPTION"> = {
 
 export async function completeOnboarding(
   userId: string,
-  data: { roleLabel: string; teamSize: string; clinicName?: string }
+  data: {
+    roleLabel: string
+    teamSize: string
+    clinicName?: string
+    inviteCode?: string
+    crm?: string
+    specialty?: string
+    phone?: string
+  }
 ) {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) throw new Error("NOT_FOUND")
@@ -194,6 +226,17 @@ export async function completeOnboarding(
     }
   }
 
+  if (data.inviteCode?.trim()) {
+    const { joinByInviteCode } = await import("@/services/invite.service.js")
+    return joinByInviteCode(userId, data.inviteCode, {
+      roleLabel: data.roleLabel,
+      crm: data.crm,
+      specialty: data.specialty,
+      phone: data.phone,
+      cpf: user.cpf ?? undefined,
+    })
+  }
+
   const mappedRole = ROLE_LABEL_MAP[data.roleLabel] ?? "ADMIN"
   const clinicTitle =
     data.clinicName?.trim() ||
@@ -201,7 +244,7 @@ export async function completeOnboarding(
 
   const result = await prisma.$transaction(async (tx) => {
     const clinic = await tx.clinic.create({
-      data: { name: clinicTitle, active: true },
+      data: { name: clinicTitle, active: true, inviteCode: (await import("@/lib/invite-code.js")).generateInviteCode() },
     })
 
     await tx.user.update({

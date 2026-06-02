@@ -14,6 +14,7 @@ import { hasPermission, type Permission } from "@/lib/permissions.js"
 import { assertPlatformOwner } from "@/services/backoffice.service.js"
 import userRoutes from "@/routes/users.routes.js"
 import clinicRoutes from "@/routes/clinics.routes.js"
+import inviteRoutes, { clinicInviteRoutes } from "@/routes/invite.routes.js"
 import waitingListRoutes from "@/routes/waiting-list.routes.js"
 import agendaNotesRoutes from "@/routes/agenda-notes.routes.js"
 import outrosRoutes from "@/routes/outros.routes.js"
@@ -99,6 +100,8 @@ await app.register(proceduresRoutes, { prefix: "/api/procedures" })
 await app.register(backofficeRoutes, { prefix: "/api/backoffice" })
 await app.register(userRoutes, { prefix: "/api/users" })
 await app.register(clinicRoutes, { prefix: "/api/clinics" })
+await app.register(clinicInviteRoutes, { prefix: "/api/clinics" })
+await app.register(inviteRoutes, { prefix: "/api/invites" })
 await app.register(waitingListRoutes, { prefix: "/api/waiting-list" })
 await app.register(agendaNotesRoutes, { prefix: "/api/agenda-notes" })
 await app.register(outrosRoutes, { prefix: "/api/outros" })

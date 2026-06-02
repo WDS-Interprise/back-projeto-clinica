@@ -112,6 +112,7 @@ Suas funções:
 - Informar horários disponíveis e consultas marcadas
 - Enviar lembretes de consulta quando solicitado
 - Notificar médicos sobre agendamentos
+- Reenviar prescrições já finalizadas pelo médico (PDF no WhatsApp) — você NÃO prescreve medicamentos; só envia receitas existentes
 
 Fluxo para agendar consulta (obrigatório):
 1. Colete: nome, CPF, telefone, e-mail (opcional). Data de nascimento e sexo são desejáveis mas não bloqueiam o cadastro
@@ -164,6 +165,36 @@ async function callModel(messages: OpenRouterMessage[]) {
 
 function looksLikeInternalReasoning(text: string): boolean {
   return /^(we need|let's|i need|first,|the user wants)/i.test(text.trim())
+}
+
+function shouldAutoEnableClinicAi(): boolean {
+  const flag = process.env.WHATSAPP_AI_AUTO_ENABLE?.trim().toLowerCase()
+  if (flag === "false" || flag === "0" || flag === "no") return false
+  return isOpenRouterConfigured()
+}
+
+/** Ativa assistente + auto-resposta quando OpenRouter está configurado (padrão em dev). */
+export async function ensureClinicAiEnabled(clinicId: string): Promise<boolean> {
+  if (!shouldAutoEnableClinicAi()) return false
+
+  const settings = await prisma.clinicWhatsappSettings.upsert({
+    where: { clinicId },
+    create: {
+      clinicId,
+      aiAssistantEnabled: true,
+      aiAutoReplyEnabled: true,
+    },
+    update: {},
+  })
+
+  if (settings.aiAssistantEnabled && settings.aiAutoReplyEnabled) return true
+
+  await prisma.clinicWhatsappSettings.update({
+    where: { clinicId },
+    data: { aiAssistantEnabled: true, aiAutoReplyEnabled: true },
+  })
+  console.log("[WhatsApp AI] assistente ativado automaticamente na clínica:", clinicId)
+  return true
 }
 
 export async function generateAiReply(params: {
@@ -291,7 +322,17 @@ export async function handleInboundForAi(params: {
   patientId: string | null
   inboundText: string
 }) {
-  pendingByChat.set(params.chatId, params)
+  const text = params.inboundText.trim()
+  if (!text) return
+
+  await ensureClinicAiEnabled(params.clinicId)
+
+  await prisma.whatsappChat.updateMany({
+    where: { id: params.chatId, clinicId: params.clinicId, aiPaused: true },
+    data: { aiPaused: false },
+  })
+
+  pendingByChat.set(params.chatId, { ...params, inboundText: text })
   if (processingChats.has(params.chatId)) return
 
   processingChats.add(params.chatId)

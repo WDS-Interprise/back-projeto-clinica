@@ -104,7 +104,15 @@ export async function completeOnboarding(req: FastifyRequest, reply: FastifyRepl
 
       payload.userId,
 
-      req.body as { roleLabel: string; teamSize: string; clinicName?: string }
+      req.body as {
+        roleLabel: string
+        teamSize: string
+        clinicName?: string
+        inviteCode?: string
+        crm?: string
+        specialty?: string
+        phone?: string
+      }
 
     )
 
@@ -116,6 +124,14 @@ export async function completeOnboarding(req: FastifyRequest, reply: FastifyRepl
 
       return reply.status(404).send({ error: "Usuario nao encontrado" })
 
+    }
+
+    if (error.code === "INVALID_CODE" || error.code === "CRM_REQUIRED") {
+      return reply.status(400).send({ error: error.message })
+    }
+
+    if (error.code === "ALREADY_MEMBER") {
+      return reply.status(409).send({ error: error.message })
     }
 
     req.log.error(error)
