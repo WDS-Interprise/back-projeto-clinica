@@ -3,6 +3,7 @@ import type { AuthContext } from "@/types/index.js"
 import { WHATSAPP_STATUS } from "@/whatsapp/status.js"
 import { getConnectedSocket, sendDocumentMessage, sendTextMessage } from "@/whatsapp/manager.js"
 import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, resolvePatientWhatsappDigits, tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
+import { isOpenRouterConfigured } from "@/lib/openrouter.js"
 import { ensureChat, persistOutboundMessage } from "@/whatsapp/message-store.js"
 import { getPatientWhatsappDigits } from "@/services/whatsapp-patient-phone.service.js"
 import { ensureConnectionRuntime } from "@/services/whatsapp.service.js"
@@ -405,9 +406,12 @@ export async function getSettings(ctx: AuthContext) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
   const { ensureDefaultWhatsappTemplates } = await import("./whatsapp-template.service.js")
   await ensureDefaultWhatsappTemplates(ctx.clinicId)
+  const aiDefaults = isOpenRouterConfigured()
+    ? { aiAssistantEnabled: true, aiAutoReplyEnabled: true }
+    : {}
   const settings = await prisma.clinicWhatsappSettings.upsert({
     where: { clinicId: ctx.clinicId },
-    create: { clinicId: ctx.clinicId },
+    create: { clinicId: ctx.clinicId, ...aiDefaults },
     update: {},
   })
   const connections = await prisma.whatsappConnection.findMany({

@@ -4,6 +4,8 @@ import { seedCid10 } from "./seed-cid10.js"
 import { seedCid11 } from "./seed-cid11.js"
 import { seedCidInss } from "./seed-cid-inss.js"
 
+import { generateInviteCode } from "../src/lib/invite-code.js"
+
 const prisma = new PrismaClient()
 
 async function main() {
@@ -22,8 +24,16 @@ async function main() {
       phone: "1135145000",
       email: "contato@clinmax.com.br",
       active: true,
+      inviteCode: generateInviteCode(),
     },
   })
+
+  if (!clinic.inviteCode) {
+    await prisma.clinic.update({
+      where: { id: clinic.id },
+      data: { inviteCode: generateInviteCode() },
+    })
+  }
 
   await prisma.patient.updateMany({
     where: { clinicId: null },

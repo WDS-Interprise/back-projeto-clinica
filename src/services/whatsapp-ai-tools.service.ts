@@ -7,6 +7,7 @@ import * as appointmentService from "@/services/appointment.service.js"
 import * as patientService from "@/services/patient.service.js"
 import { sendAppointmentReminder } from "@/services/whatsapp-reminder.service.js"
 import { sendMessageNow } from "@/services/whatsapp-messaging.service.js"
+import { resendWhatsApp } from "@/services/prescription.service.js"
 import { tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
 import { addMinutesToTime, timeToMinutes } from "@/lib/agenda-schedule.js"
 
@@ -557,6 +558,71 @@ export async function executeAiTool(
       }
     }
 
+    case "listar_prescricoes_paciente": {
+      const patientId = await resolvePatientId(ctx, args)
+      if (!patientId) {
+        return JSON.stringify({
+          erro: "Identifique o paciente (CPF, telefone ou buscar_paciente) antes de listar prescrições",
+        })
+      }
+      const rows = await prisma.prescription.findMany({
+        where: { clinicId: ctx.clinicId, patientId, status: "FINALIZED" },
+        orderBy: { prescriptionDate: "desc" },
+        take: 8,
+        select: {
+          id: true,
+          prescriptionDate: true,
+          sentAt: true,
+          professional: { select: { name: true } },
+        },
+      })
+      return JSON.stringify({
+        total: rows.length,
+        prescricoes: rows.map((r) => ({
+          prescriptionId: r.id,
+          data: format(r.prescriptionDate, "dd/MM/yyyy"),
+          medico: r.professional?.name ?? "",
+          jaEnviadaWhatsapp: !!r.sentAt,
+        })),
+      })
+    }
+
+    case "enviar_prescricao_whatsapp": {
+      const prescriptionId = String(args.prescriptionId ?? "").trim()
+      if (!prescriptionId) {
+        return JSON.stringify({ erro: "Informe prescriptionId (use listar_prescricoes_paciente)" })
+      }
+      const patientId = await resolvePatientId(ctx, args)
+      if (!patientId) {
+        return JSON.stringify({ erro: "Paciente não identificado para envio da prescrição" })
+      }
+      const rx = await prisma.prescription.findFirst({
+        where: {
+          id: prescriptionId,
+          clinicId: ctx.clinicId,
+          patientId,
+          status: "FINALIZED",
+        },
+        select: { id: true },
+      })
+      if (!rx) {
+        return JSON.stringify({
+          sucesso: false,
+          erro: "Prescrição não encontrada ou ainda não finalizada pelo médico",
+        })
+      }
+      try {
+        await resendWhatsApp(auth, prescriptionId, ctx.phoneDigits)
+        return JSON.stringify({
+          sucesso: true,
+          mensagem: "Prescrição enviada no WhatsApp (texto + PDF)",
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Erro ao enviar prescrição"
+        return JSON.stringify({ sucesso: false, erro: msg })
+      }
+    }
+
     case "info_clinica": {
       const clinic = await prisma.clinic.findUnique({
         where: { id: ctx.clinicId },
@@ -604,6 +670,10 @@ Agenda:
 - listar_consultas_paciente — args: { patientId? }
 - listar_consultas_medico — args: { doctorId, date? }
 - agendar_consulta — args: { doctorId, date, startTime, patientId?, cpf?, endTime?, procedureId?, notes? }
+
+Prescrições (somente receitas já emitidas pelo médico — nunca invente medicamentos):
+- listar_prescricoes_paciente — args: { patientId?, cpf? }
+- enviar_prescricao_whatsapp — args: { prescriptionId, patientId?, cpf? }
 
 Outros:
 - enviar_lembrete_consulta — args: { appointmentId }

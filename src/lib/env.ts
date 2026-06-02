@@ -10,3 +10,14 @@ export const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d"
 export const PORT = Number(process.env.PORT) || 3001
 export const PUBLIC_APP_URL =
   process.env.PUBLIC_APP_URL || process.env.API_PUBLIC_URL || `http://localhost:${PORT}`
+export const FRONTEND_URL =
+  process.env.FRONTEND_URL || process.env.VITE_APP_URL || "http://localhost:5173"
+export const MAIL_SMTP_HOST = process.env.MAIL_SMTP_HOST || ""
+export const MAIL_SMTP_PORT = Number(process.env.MAIL_SMTP_PORT || 587)
+export const MAIL_SMTP_USER = process.env.MAIL_SMTP_USER || ""
+export const MAIL_SMTP_PASS = process.env.MAIL_SMTP_PASS || ""
+export const MAIL_FROM = process.env.MAIL_FROM || "ClinMax <noreply@clinmax.local>"
+
+export function isMailConfigured() {
+  return Boolean(MAIL_SMTP_HOST && MAIL_SMTP_USER && MAIL_SMTP_PASS)
+}

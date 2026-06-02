@@ -9,6 +9,13 @@ datasource db {
   url      = "file:./dev.db"
 }
 
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
 enum Role {
   ADMIN
   DOCTOR
@@ -126,9 +133,11 @@ model Clinic {
   lunchStartTime      String   @default("12:00")
   lunchEndTime        String   @default("13:00")
   slotIntervalMinutes Int      @default(30)
+  inviteCode          String?  @unique
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   users            UserClinic[]
+  invites          ClinicInvite[]
   patients         Patient[]
   appointments     Appointment[]
   waitingList          WaitingListEntry[]
@@ -163,6 +172,8 @@ model User {
   whatsappConnections  WhatsappConnection[]
   prescriptionsCreated Prescription[]       @relation("PrescriptionProfessional")
   prescriptionTemplates PrescriptionTemplate[]
+  invitesSent          ClinicInvite[]         @relation("InvitesSent")
+  invitesAccepted      ClinicInvite[]         @relation("InvitesAccepted")
 }
 
 /// Conexão WhatsApp (Baileys) — uma sessão por registro, vinculada à clínica e ao usuário que conectou.
@@ -323,6 +334,27 @@ model UserClinic {
   clinic        Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
 
   @@unique([userId, clinicId])
+}
+
+model ClinicInvite {
+  id           String       @id @default(cuid())
+  clinicId     String
+  email        String
+  role         Role         @default(DOCTOR)
+  token        String       @unique
+  status       InviteStatus @default(PENDING)
+  invitedById  String
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  clinic       Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitesSent", fields: [invitedById], references: [id], onDelete: Cascade)
+  acceptedBy   User?        @relation("InvitesAccepted", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([clinicId, status])
+  @@index([email])
 }
 
 model ReceptionistDoctor {

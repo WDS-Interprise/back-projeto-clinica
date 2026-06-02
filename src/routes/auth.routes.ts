@@ -48,6 +48,10 @@ const onboardingSchema = z.object({
   roleLabel: z.string().min(1),
   teamSize: z.string().min(1),
   clinicName: z.string().optional(),
+  inviteCode: z.string().optional(),
+  crm: z.string().optional(),
+  specialty: z.string().optional(),
+  phone: z.string().optional(),
 })
 
 const updateMeSchema = z.object({
