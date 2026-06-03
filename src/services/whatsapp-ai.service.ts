@@ -1,16 +1,27 @@
 import prisma from "@/lib/prisma.js"
 import {
-  chatCompletion,
+  chatCompletionWithFallback,
   isOpenRouterConfigured,
+  isRetryableOpenRouterError,
   type OpenRouterMessage,
 } from "@/lib/openrouter.js"
 import { AI_TOOLS_DOC, executeAiTool, type AiToolContext } from "@/services/whatsapp-ai-tools.service.js"
+import { buildWhatsappAiSystemPrompt } from "@/lib/whatsapp-ai-prompt.js"
 import { sendMessageNow } from "@/services/whatsapp-messaging.service.js"
+import {
+  markChatAiComposing,
+  sendComposingIndicator,
+  sendPausedPresence,
+} from "@/whatsapp/presence.js"
 
 const MAX_TOOL_ROUNDS = 10
 const MAX_HISTORY = 16
+const MAX_REPLY_CHARS = 1200
+const INBOUND_DEBOUNCE_MS = Number(process.env.WHATSAPP_AI_DEBOUNCE_MS ?? 2000)
 const processingChats = new Set<string>()
 const pendingByChat = new Map<string, Parameters<typeof handleInboundForAi>[0]>()
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const composingIntervals = new Map<string, ReturnType<typeof setInterval>>()
 
 type ToolCall = { tool: string; args: Record<string, unknown> }
 
@@ -95,52 +106,23 @@ function containsLeakedToolJson(text: string): boolean {
   return /\{"tool"\s*:\s*"[^"]+"/.test(text)
 }
 
+function containsLeakedInternals(text: string): boolean {
+  return (
+    /buscar_horarios|resolver_paciente|verificar_horario|agendar_consulta|listar_medicos/i.test(
+      text
+    ) ||
+    /\bferramenta\b|sistema\s+retornou|usei\s+a\s+/i.test(text) ||
+    /API\b|JSON\b/i.test(text)
+  )
+}
+
 async function buildSystemPrompt(clinicId: string): Promise<string> {
   const clinic = await prisma.clinic.findUnique({
     where: { id: clinicId },
     select: { name: true },
   })
   const today = new Date().toISOString().slice(0, 10)
-  return `Você é a assistente virtual da clínica "${clinic?.name ?? "ClinMax"}" no WhatsApp.
-
-Data de hoje: ${today} (use formato brasileiro dd/mm/aaaa nas respostas).
-
-Suas funções:
-- Atender pacientes com cordialidade e objetividade
-- Cadastrar pacientes novos OU reconhecer cadastro existente (por CPF)
-- Consultar e agendar consultas na agenda — você confirma diretamente, sem repassar à recepção
-- Informar horários disponíveis e consultas marcadas
-- Enviar lembretes de consulta quando solicitado
-- Notificar médicos sobre agendamentos
-- Reenviar prescrições já finalizadas pelo médico (PDF no WhatsApp) — você NÃO prescreve medicamentos; só envia receitas existentes
-
-Fluxo para agendar consulta (obrigatório):
-1. Colete: nome, CPF, telefone, e-mail (opcional). Data de nascimento e sexo são desejáveis mas não bloqueiam o cadastro
-2. Use buscar_paciente_cpf com o CPF informado
-3. Se não encontrar → use resolver_paciente com todos os dados para criar o cadastro na hora
-4. Se encontrar → cumprimente pelo nome e use o paciente existente
-5. Confirme médico, data e horário; use buscar_horarios se necessário
-6. Use agendar_consulta e confirme: "Sua consulta está agendada para..."
-
-Ao informar horários disponíveis:
-- Use buscar_horarios e leia horarios + intervaloMinutos (duração real de cada slot)
-- Se o paciente pedir horário específico ("às 15:00", "15h"), use verificar_horario ANTES de responder
-- Se verificar_horario retornar disponivel: true, confirme que ESTÁ disponível — nunca diga indisponível
-- Consulta que TERMINA às 15:00 NÃO ocupa slot que COMEÇA às 15:00 (são horários consecutivos válidos)
-- Se o dia estiver livre, ofereça opções de manhã E tarde — nunca cite só 08:00
-- Pergunte qual horário o paciente prefere antes de agendar
-
-Regras:
-- NUNCA diga que "a recepção vai cadastrar" ou "em breve confirmaremos" — você cadastra e confirma na hora
-- Se o CPF já existir, cumprimente pelo nome e prossiga com o agendamento
-- Respostas curtas, adequadas ao WhatsApp (máx. ~3 parágrafos)
-- Nunca invente horários: use buscar_horarios ou listar_consultas_*
-- Horários no formato HH:mm (24h)
-- Idioma: português do Brasil
-- Para chamar ferramenta: responda SOMENTE com um JSON {"tool":"...","args":{...}} por mensagem (nunca misture JSON com texto ao paciente)
-- Só confirme agendamento DEPOIS que agendar_consulta retornar sucesso: true
-
-${AI_TOOLS_DOC}`
+  return `${buildWhatsappAiSystemPrompt(clinic?.name ?? "ClinMax", today)}\n\n${AI_TOOLS_DOC}`
 }
 
 async function loadConversationHistory(chatId: string): Promise<OpenRouterMessage[]> {
@@ -160,8 +142,11 @@ async function loadConversationHistory(chatId: string): Promise<OpenRouterMessag
 }
 
 async function callModel(messages: OpenRouterMessage[]) {
-  return chatCompletion({ messages, reasoning: false })
+  return chatCompletionWithFallback({ messages, reasoning: false })
 }
+
+const AI_UNAVAILABLE_REPLY =
+  "Desculpe, no momento não consegui processar sua mensagem (instabilidade do serviço de IA). Por favor, tente novamente em alguns minutos ou aguarde um atendente."
 
 function looksLikeInternalReasoning(text: string): boolean {
   return /^(we need|let's|i need|first,|the user wants)/i.test(text.trim())
@@ -270,20 +255,57 @@ export async function generateAiReply(params: {
     const cleanReply = stripToolCallsFromText(rawContent)
     if (cleanReply) reply = cleanReply
 
-    if (!reply || looksLikeInternalReasoning(reply) || containsLeakedToolJson(reply)) {
+    if (
+      !reply ||
+      looksLikeInternalReasoning(reply) ||
+      containsLeakedToolJson(reply) ||
+      containsLeakedInternals(reply)
+    ) {
       console.warn("[WhatsApp AI] resposta inválida, tentando novamente (chat", params.chatId, ")")
       messages.push({
         role: "user",
         content:
-          "Responda em português do Brasil para o paciente no WhatsApp, de forma curta. Se precisar usar ferramenta, responda SOMENTE com JSON {\"tool\":\"...\",\"args\":{...}} (um por vez, sem texto junto).",
+          "Reescreva para o paciente: português correto, frases curtas, sem citar ferramentas/API/nomes internos. Se for usar sistema, só JSON {\"tool\":\"...\",\"args\":{...}} separado.",
       })
       continue
     }
 
-    return reply
+    return truncateForWhatsapp(reply)
   }
 
   return "Desculpe, não consegui concluir sua solicitação. Um atendente humano vai ajudá-lo em breve."
+}
+
+function truncateForWhatsapp(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= MAX_REPLY_CHARS) return trimmed
+  return `${trimmed.slice(0, MAX_REPLY_CHARS - 1)}…`
+}
+
+export function isChatAiComposing(chatId: string): boolean {
+  return composingIntervals.has(chatId) || processingChats.has(chatId)
+}
+
+function startComposingLoop(params: {
+  connectionId: string
+  remoteJid: string
+  phoneDigits: string
+  chatId: string
+}) {
+  stopComposingLoop(params.chatId)
+  markChatAiComposing(params.chatId, true)
+  void sendComposingIndicator(params.connectionId, params.phoneDigits, params.remoteJid)
+  const interval = setInterval(() => {
+    void sendComposingIndicator(params.connectionId, params.phoneDigits, params.remoteJid)
+  }, 4000)
+  composingIntervals.set(params.chatId, interval)
+}
+
+function stopComposingLoop(chatId: string) {
+  const interval = composingIntervals.get(chatId)
+  if (interval) clearInterval(interval)
+  composingIntervals.delete(chatId)
+  markChatAiComposing(chatId, false)
 }
 
 async function processInboundQueue(chatId: string) {
@@ -291,10 +313,28 @@ async function processInboundQueue(chatId: string) {
     const params = pendingByChat.get(chatId)!
     pendingByChat.delete(chatId)
 
+    const chat = await prisma.whatsappChat.findUnique({
+      where: { id: chatId },
+      select: { aiPaused: true },
+    })
+    if (!chat || chat.aiPaused) {
+      console.warn("[WhatsApp AI] conversa pausada, não responde:", chatId)
+      continue
+    }
+
+    startComposingLoop({
+      connectionId: params.connectionId,
+      remoteJid: params.remoteJid,
+      phoneDigits: params.phoneDigits,
+      chatId,
+    })
+
     try {
       console.log("[WhatsApp AI] processando:", chatId, params.inboundText.slice(0, 60))
       const reply = await generateAiReply(params)
       if (!reply) continue
+
+      stopComposingLoop(chatId)
 
       await sendMessageNow({
         clinicId: params.clinicId,
@@ -303,14 +343,55 @@ async function processInboundQueue(chatId: string) {
         to: params.phoneDigits,
         body: reply,
         patientId: params.patientId,
+        showTyping: true,
       })
       console.log("[WhatsApp AI] resposta enviada:", chatId)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error("[WhatsApp AI] erro ao responder:", msg, err)
+
+      if (isRetryableOpenRouterError(err) || msg.includes("OPENROUTER")) {
+        try {
+          stopComposingLoop(chatId)
+          await sendMessageNow({
+            clinicId: params.clinicId,
+            connectionId: params.connectionId,
+            remoteJid: params.remoteJid,
+            to: params.phoneDigits,
+            body: AI_UNAVAILABLE_REPLY,
+            patientId: params.patientId,
+            showTyping: false,
+          })
+          console.log("[WhatsApp AI] aviso de indisponibilidade enviado:", chatId)
+        } catch (sendErr) {
+          console.error("[WhatsApp AI] falha ao enviar aviso:", sendErr)
+        }
+      }
+    } finally {
+      stopComposingLoop(chatId)
+      await sendPausedPresence(
+        params.connectionId,
+        params.phoneDigits,
+        params.remoteJid
+      ).catch(() => undefined)
     }
   }
   processingChats.delete(chatId)
+}
+
+function scheduleAiProcessing(chatId: string) {
+  const existing = debounceTimers.get(chatId)
+  if (existing) clearTimeout(existing)
+
+  debounceTimers.set(
+    chatId,
+    setTimeout(() => {
+      debounceTimers.delete(chatId)
+      if (processingChats.has(chatId)) return
+      processingChats.add(chatId)
+      void processInboundQueue(chatId)
+    }, INBOUND_DEBOUNCE_MS)
+  )
 }
 
 export async function handleInboundForAi(params: {
@@ -327,16 +408,20 @@ export async function handleInboundForAi(params: {
 
   await ensureClinicAiEnabled(params.clinicId)
 
-  await prisma.whatsappChat.updateMany({
-    where: { id: params.chatId, clinicId: params.clinicId, aiPaused: true },
-    data: { aiPaused: false },
+  const chat = await prisma.whatsappChat.findUnique({
+    where: { id: params.chatId },
+    select: { aiPaused: true },
   })
+  if (chat?.aiPaused) {
+    console.log("[WhatsApp AI] IA pausada nesta conversa (atendimento manual):", params.chatId)
+    return
+  }
 
-  pendingByChat.set(params.chatId, { ...params, inboundText: text })
-  if (processingChats.has(params.chatId)) return
+  const prev = pendingByChat.get(params.chatId)
+  const mergedText = prev?.inboundText ? `${prev.inboundText}\n${text}` : text
+  pendingByChat.set(params.chatId, { ...params, inboundText: mergedText })
 
-  processingChats.add(params.chatId)
-  void processInboundQueue(params.chatId)
+  scheduleAiProcessing(params.chatId)
 }
 
 export async function setChatAiPaused(chatId: string, clinicId: string, paused: boolean) {

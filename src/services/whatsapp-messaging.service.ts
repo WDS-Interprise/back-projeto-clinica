@@ -2,11 +2,19 @@ import prisma from "@/lib/prisma.js"
 import type { AuthContext } from "@/types/index.js"
 import { WHATSAPP_STATUS } from "@/whatsapp/status.js"
 import { getConnectedSocket, sendDocumentMessage, sendTextMessage } from "@/whatsapp/manager.js"
+import { isContactComposing } from "@/whatsapp/contact-presence-store.js"
+import {
+  runComposingForDuration,
+  sendComposingIndicator,
+  sendPausedPresence,
+  typingDurationFromText,
+} from "@/whatsapp/presence.js"
 import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, resolvePatientWhatsappDigits, tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
 import { isOpenRouterConfigured } from "@/lib/openrouter.js"
 import { ensureChat, persistOutboundMessage } from "@/whatsapp/message-store.js"
 import { getPatientWhatsappDigits } from "@/services/whatsapp-patient-phone.service.js"
 import { ensureConnectionRuntime } from "@/services/whatsapp.service.js"
+import { scheduleChatsProfileSync } from "@/services/whatsapp-contact-profile.service.js"
 
 const USABLE_CONNECTION_STATUSES = [
   WHATSAPP_STATUS.CONNECTED,
@@ -98,7 +106,7 @@ export async function listChats(ctx: AuthContext, params?: { patientId?: string 
   if (!ctx.clinicId) return []
   await reconcileChatPhoneDigits(ctx.clinicId)
   const activeConnectionId = await resolveDefaultConnectionId(ctx.clinicId)
-  return prisma.whatsappChat.findMany({
+  const chats = await prisma.whatsappChat.findMany({
     where: {
       clinicId: ctx.clinicId,
       ...(activeConnectionId ? { connectionId: activeConnectionId } : {}),
@@ -110,6 +118,17 @@ export async function listChats(ctx: AuthContext, params?: { patientId?: string 
       connection: { select: { id: true, name: true, status: true } },
     },
   })
+
+  scheduleChatsProfileSync(
+    chats.map((c) => ({ id: c.id, profilePictureFetchedAt: c.profilePictureFetchedAt }))
+  )
+
+  const { isChatAiComposing } = await import("@/services/whatsapp-ai.service.js")
+  return chats.map((c) => ({
+    ...c,
+    aiComposing: isChatAiComposing(c.id),
+    contactComposing: isContactComposing(c.remoteJid),
+  }))
 }
 
 export async function listChatMessages(ctx: AuthContext, chatId: string, limit = 80) {
@@ -128,7 +147,37 @@ export async function listChatMessages(ctx: AuthContext, chatId: string, limit =
     orderBy: { sentAt: "asc" },
     take: limit,
   })
-  return { chat, messages }
+
+  const { isChatAiComposing } = await import("@/services/whatsapp-ai.service.js")
+
+  return {
+    chat: {
+      ...chat,
+      aiComposing: isChatAiComposing(chatId),
+      contactComposing: isContactComposing(chat.remoteJid),
+    },
+    messages,
+  }
+}
+
+export async function setStaffComposing(
+  ctx: AuthContext,
+  chatId: string,
+  active: boolean
+) {
+  const chat = await prisma.whatsappChat.findFirst({
+    where: { id: chatId, clinicId: ctx.clinicId ?? "" },
+    select: { connectionId: true, remoteJid: true, phoneDigits: true },
+  })
+  if (!chat) throw new Error("NOT_FOUND")
+
+  await assertConnectionForClinic(ctx.clinicId!, chat.connectionId)
+
+  if (active) {
+    await sendComposingIndicator(chat.connectionId, chat.phoneDigits, chat.remoteJid)
+  } else {
+    await sendPausedPresence(chat.connectionId, chat.phoneDigits, chat.remoteJid)
+  }
 }
 
 export async function createChat(
@@ -185,6 +234,8 @@ export async function sendMessageNow(params: {
   patientId?: string | null
   templateId?: string | null
   appointmentId?: string | null
+  /** Simula digitação no WhatsApp antes de enviar (Baileys composing). */
+  showTyping?: boolean
 }) {
   const conn = await assertConnectionForClinic(params.clinicId, params.connectionId)
 
@@ -211,7 +262,20 @@ export async function sendMessageNow(params: {
 
   const phoneDigits = tryNormalizeWhatsappPhone(params.to ?? "") ?? jid.split("@")[0]?.replace(/\D/g, "") ?? ""
 
+  if (params.showTyping) {
+    await runComposingForDuration({
+      connectionId: conn.id,
+      destination: jid,
+      remoteJid: jid,
+      durationMs: typingDurationFromText(params.body),
+    })
+  }
+
   const { messageId } = await sendTextMessage(conn.id, jid, params.body)
+
+  if (params.showTyping) {
+    await sendPausedPresence(conn.id, jid, jid).catch(() => undefined)
+  }
 
   await persistOutboundMessage({
     connectionId: conn.id,
