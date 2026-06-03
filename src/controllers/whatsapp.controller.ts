@@ -5,6 +5,7 @@ import * as whatsappService from "@/services/whatsapp.service.js"
 import * as messagingService from "@/services/whatsapp-messaging.service.js"
 import * as templateService from "@/services/whatsapp-template.service.js"
 import { setChatAiPaused } from "@/services/whatsapp-ai.service.js"
+import { getChatAvatarBuffer } from "@/services/whatsapp-contact-profile.service.js"
 import { isOpenRouterConfigured } from "@/lib/openrouter.js"
 
 async function ctxFromReq(req: FastifyRequest) {
@@ -183,6 +184,41 @@ export async function createChat(req: FastifyRequest, reply: FastifyReply) {
     if (mapMessagingError(error, reply)) return
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao criar conversa" })
+  }
+}
+
+export async function getChatAvatar(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    if (!ctx.clinicId) {
+      return reply.status(400).send({ error: "Clínica não identificada" })
+    }
+    const { chatId } = req.params as { chatId: string }
+    const result = await getChatAvatarBuffer(ctx.clinicId, chatId)
+    if (!result) {
+      return reply.status(404).send({ error: "Foto não disponível" })
+    }
+    return reply
+      .header("Content-Type", result.contentType)
+      .header("Cache-Control", "private, max-age=3600")
+      .send(result.buffer)
+  } catch (error: unknown) {
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao carregar foto" })
+  }
+}
+
+export async function setChatComposing(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    const { chatId } = req.params as { chatId: string }
+    const body = req.body as { active?: boolean }
+    await messagingService.setStaffComposing(ctx, chatId, body?.active !== false)
+    return reply.send({ ok: true })
+  } catch (error: unknown) {
+    if (mapMessagingError(error, reply)) return
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao atualizar digitação" })
   }
 }
 

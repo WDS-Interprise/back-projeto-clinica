@@ -27,12 +27,18 @@ import medicamentosRoutes from "@/routes/medicamentos.routes.js"
 import examesRoutes from "@/routes/exames.routes.js"
 import vacinasRoutes from "@/routes/vacinas.routes.js"
 import { JWT_SECRET, PORT } from "@/lib/env.js"
+import { resolveCorsOrigins } from "@/lib/cors.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
 import { resumeWhatsappSessionsOnBoot } from "@/services/whatsapp.service.js"
 
 const app = Fastify({ logger: true })
 
-await app.register(cors, { origin: true })
+await app.register(cors, {
+  origin: resolveCorsOrigins(),
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type", "Accept"],
+  maxAge: 86_400,
+})
 
 function extractBearerToken(req: { headers: { authorization?: string } }) {
   const header = req.headers.authorization

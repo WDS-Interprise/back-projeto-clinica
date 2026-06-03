@@ -10,6 +10,16 @@ import { sendMessageNow } from "@/services/whatsapp-messaging.service.js"
 import { resendWhatsApp } from "@/services/prescription.service.js"
 import { tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
 import { addMinutesToTime, timeToMinutes } from "@/lib/agenda-schedule.js"
+import {
+  formatDoctorForPatientListing,
+  isDoctorVisibleToPatients,
+} from "@/lib/doctor-display-filter.js"
+import {
+  extractPhoneDigitsFromText,
+  formatPhoneBrDisplay,
+  parseBirthDateInput,
+  parseGenderInput,
+} from "@/lib/patient-input-parse.js"
 
 export type AiToolContext = {
   clinicId: string
@@ -133,14 +143,27 @@ async function runResolverPaciente(
     return JSON.stringify({ sucesso: false, erro: "Informe o telefone" })
   }
 
-  const birthDateRaw = String(args.dataNascimento ?? args.birthDate ?? "").trim()
-  const genderRaw = String(args.sexo ?? args.gender ?? "").trim().toUpperCase()
-  const birthDate = birthDateRaw || "1990-01-01"
-  const gender = ["M", "F", "O"].includes(genderRaw) ? genderRaw : "O"
-  const notesExtra =
-    !birthDateRaw || !["M", "F", "O"].includes(genderRaw)
-      ? "Cadastro via IA — confirmar data de nascimento e sexo na recepção."
-      : "Cadastro via assistente IA WhatsApp"
+  const birthRaw = String(args.dataNascimento ?? args.birthDate ?? "").trim()
+  const genderRaw = String(args.sexo ?? args.gender ?? "").trim()
+  const parsedBirth = birthRaw ? parseBirthDateInput(birthRaw) : { iso: null, displayBr: null }
+  const parsedGender = parseGenderInput(genderRaw)
+
+  if (!parsedBirth.iso) {
+    return JSON.stringify({
+      sucesso: false,
+      erro: parsedBirth.error ?? "Informe a data de nascimento (ex.: 14/04/2007 ou 14042007)",
+    })
+  }
+  if (!parsedGender) {
+    return JSON.stringify({
+      sucesso: false,
+      erro: "Informe o sexo: masculino, feminino ou M/F",
+    })
+  }
+
+  const birthDate = parsedBirth.iso
+  const gender = parsedGender
+  const notesExtra = "Cadastro via assistente IA WhatsApp"
 
   try {
     const created = await patientService.create(auth, {
@@ -154,6 +177,7 @@ async function runResolverPaciente(
       notes: notesExtra,
     })
     await linkChatToPatient(ctx, created.id)
+    const phoneDisplay = formatPhoneBrDisplay(phone)
     return JSON.stringify({
       sucesso: true,
       criado: true,
@@ -161,7 +185,12 @@ async function runResolverPaciente(
       id: created.id,
       nome: created.name,
       cpf: created.cpf,
+      telefoneFormatado: phoneDisplay,
+      nascimentoFormatado: parsedBirth.displayBr,
+      sexo: gender,
       mensagem: "Paciente cadastrado com sucesso",
+      instrucao:
+        "Informe ao paciente que o cadastro foi finalizado. Não mencione ferramentas.",
     })
   } catch (err) {
     if (err instanceof DuplicateFieldsError) {
@@ -304,19 +333,25 @@ export async function executeAiTool(
 
     case "listar_medicos": {
       const doctors = await prisma.doctor.findMany({
-        where: { available: true },
-        select: { id: true, name: true, specialty: true, phone: true },
+        where: { available: true, hasOwnAgenda: true, userId: { not: null } },
+        select: {
+          id: true,
+          name: true,
+          specialty: true,
+          available: true,
+          userId: true,
+          hasOwnAgenda: true,
+        },
         orderBy: { name: "asc" },
-        take: 30,
+        take: 40,
       })
-      return JSON.stringify(
-        doctors.map((d) => ({
-          id: d.id,
-          nome: d.name,
-          especialidade: d.specialty,
-          telefone: d.phone,
-        }))
-      )
+      const visiveis = doctors.filter(isDoctorVisibleToPatients).map(formatDoctorForPatientListing)
+      return JSON.stringify({
+        total: visiveis.length,
+        medicos: visiveis,
+        instrucao:
+          "Mostre ao paciente APENAS nome e especialidade (sem telefone). Se total for 0, peça para a recepção.",
+      })
     }
 
     case "listar_procedimentos": {
@@ -370,7 +405,7 @@ export async function executeAiTool(
         intervaloMinutos: free.intervaloMinutos,
         horarios,
         horariosParaOferecer: exemplos,
-        instrucao: `${instrucao} Cada slot dura ${free.intervaloMinutos} min (use inicio→fim exatamente como retornado). Nunca invente duração diferente.`,
+        instrucao: `${instrucao} Cada slot dura ${free.intervaloMinutos} min. Ao falar com o paciente, diga "verifiquei os horários" — nunca cite nomes de ferramentas.`,
       })
     }
 
@@ -449,6 +484,18 @@ export async function executeAiTool(
     }
 
     case "agendar_consulta": {
+      const confirmacao =
+        args.confirmacao === true ||
+        args.confirmado === true ||
+        String(args.confirmacao ?? "").toLowerCase() === "true"
+      if (!confirmacao) {
+        return JSON.stringify({
+          sucesso: false,
+          aguardandoConfirmacao: true,
+          erro: "Confirme com o paciente médico, data e horário. Só agende após ele dizer sim e use confirmacao: true.",
+        })
+      }
+
       const doctorId = String(args.doctorId ?? "")
       const date = String(args.date ?? "")
       const startTime = String(args.startTime ?? "")
@@ -504,13 +551,32 @@ export async function executeAiTool(
           where: { id: doctorId },
           select: { name: true },
         })
+
+        const [y, m, d] = row.date.split("-").map(Number)
+        const aptAt = new Date(y, m - 1, d)
+        const [hh, mm] = row.startTime.split(":").map(Number)
+        aptAt.setHours(hh ?? 0, mm ?? 0, 0, 0)
+        const now = new Date()
+        const todayStr = format(now, "yyyy-MM-dd")
+        const consultaHoje = row.date === todayStr
+        const horasAteConsulta = (aptAt.getTime() - now.getTime()) / (1000 * 60 * 60)
+        const podeMencionarLembrete24h = !consultaHoje && horasAteConsulta >= 24
+
         return JSON.stringify({
           sucesso: true,
           appointmentId: row.id,
           data: row.date,
+          dataBr: format(aptAt, "dd/MM/yyyy"),
           horario: row.startTime,
           medico: doctor?.name ?? "",
+          consultaHoje,
+          podeMencionarLembrete24h,
           mensagem: "Consulta confirmada e registrada na agenda",
+          instrucaoPaciente: consultaHoje
+            ? "Diga que a consulta está confirmada para hoje no horário informado. NÃO mencione lembrete 24h antes."
+            : podeMencionarLembrete24h
+              ? "Pode mencionar que a clínica envia lembretes automáticos quando configurado."
+              : "NÃO prometa lembrete com 24h de antecedência — a consulta é em menos de 24h.",
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Erro ao agendar"
@@ -650,35 +716,54 @@ export async function executeAiTool(
 }
 
 export const AI_TOOLS_DOC = `
-Ferramentas disponíveis (responda com JSON puro quando for usar uma):
-{"tool":"NOME","args":{...}}
+Ferramentas (uma por vez; JSON puro: {"tool":"NOME","args":{...}}):
 
-Cadastro e identificação do paciente:
-- buscar_paciente — args: { patientId? } — busca pelo telefone do WhatsApp
-- buscar_paciente_cpf — args: { cpf } — SEMPRE use antes de cadastrar
-- buscar_paciente_nome — args: { nome } — busca parcial por nome na clínica
-- resolver_paciente — args: { cpf, nome, telefone, whatsapp?, email?, dataNascimento?, sexo? }
-  → Se CPF já existe: usa o cadastro existente e atualiza contato
-  → Se não existe: cria o paciente (exige dataNascimento YYYY-MM-DD e sexo M/F/O)
-- criar_paciente — alias de resolver_paciente
+Cadastro:
+- buscar_paciente_cpf — { cpf }
+- buscar_paciente — pelo telefone do chat
+- buscar_paciente_nome — { nome }
+- resolver_paciente — { cpf, nome, telefone, dataNascimento (dd/mm/aaaa ou ddmmaaaa), sexo (masculino/feminino/M/F), email? }
+- criar_paciente — igual resolver_paciente
 
 Agenda:
-- listar_medicos — sem args
-- listar_procedimentos — sem args
-- buscar_horarios — args: { doctorId, date }  // retorna TODOS os horários livres + intervaloMinutos
-- verificar_horario — args: { doctorId, date, startTime }  // SEMPRE use quando o paciente pedir horário específico (ex: "às 15:00")
-- listar_consultas_paciente — args: { patientId? }
-- listar_consultas_medico — args: { doctorId, date? }
-- agendar_consulta — args: { doctorId, date, startTime, patientId?, cpf?, endTime?, procedureId?, notes? }
+- listar_medicos — sem args (retorna id, nome, especialidade — SEM telefone)
+- buscar_horarios — { doctorId, date: YYYY-MM-DD }
+- verificar_horario — { doctorId, date, startTime }
+- agendar_consulta — { doctorId, date, startTime, confirmacao: true, patientId?, cpf? }
+  → confirmacao: true OBRIGATÓRIO após o paciente dizer sim à confirmação de médico/data/hora
 
-Prescrições (somente receitas já emitidas pelo médico — nunca invente medicamentos):
-- listar_prescricoes_paciente — args: { patientId?, cpf? }
-- enviar_prescricao_whatsapp — args: { prescriptionId, patientId?, cpf? }
+Prescrições:
+- listar_prescricoes_paciente — { patientId?, cpf? }
+- enviar_prescricao_whatsapp — { prescriptionId }
 
 Outros:
-- enviar_lembrete_consulta — args: { appointmentId }
-- notificar_medico — args: { doctorId, mensagem }
+- enviar_lembrete_consulta — { appointmentId } — só se sucesso: true
 - info_clinica — sem args
 
-Quando NÃO precisar de ferramenta, responda em texto natural (sem JSON).
+Não existe ferramenta de envio de e-mail. Para e-mail, use resolver_paciente com email.
 `.trim()
+
+export function interpretPatientContactBundle(text: string): {
+  telefone?: string
+  telefoneFormatado?: string
+  dataNascimento?: string
+  dataNascimentoBr?: string
+  sexo?: string
+} {
+  const lower = text.toLowerCase()
+  const phone = extractPhoneDigitsFromText(text)
+  const birthMatch = text.match(/\b(\d{6,8})\b/)
+  const birthRaw = birthMatch?.[1] ?? ""
+  const parsedBirth = birthRaw ? parseBirthDateInput(birthRaw) : { iso: null, displayBr: null }
+  let sexo: string | undefined
+  if (/masculin| homem|\bh\b/.test(lower)) sexo = "M"
+  else if (/feminin| mulher|\bf\b/.test(lower)) sexo = "F"
+
+  return {
+    ...(phone ? { telefone: phone, telefoneFormatado: formatPhoneBrDisplay(phone) } : {}),
+    ...(parsedBirth.iso
+      ? { dataNascimento: parsedBirth.iso, dataNascimentoBr: parsedBirth.displayBr ?? undefined }
+      : {}),
+    ...(sexo ? { sexo } : {}),
+  }
+}

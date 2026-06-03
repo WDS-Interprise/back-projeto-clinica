@@ -142,6 +142,7 @@ export async function persistInboundMessage(params: {
   fromMe: boolean
   text: string
   sentAt?: Date
+  pushName?: string | null
 }) {
   const dup = await dedupeByWaMessageId(params.connectionId, params.waMessageId)
   if (dup) return { chat: dup.chat, message: dup }
@@ -169,7 +170,11 @@ export async function persistInboundMessage(params: {
     data: {
       lastMessage: params.text.slice(0, 500),
       lastMessageAt: params.sentAt ?? new Date(),
+      lastMessageFromMe: params.fromMe,
       unreadCount: params.fromMe ? chat.unreadCount : chat.unreadCount + 1,
+      ...(params.pushName?.trim() && !params.fromMe
+        ? { contactName: params.pushName.trim() }
+        : {}),
     },
   })
 
@@ -231,10 +236,24 @@ export async function persistOutboundMessage(params: {
     data: {
       lastMessage: params.text.slice(0, 500),
       lastMessageAt: new Date(),
+      lastMessageFromMe: true,
     },
   })
 
   return { chat, message: msg }
+}
+
+function shouldSkipInboundMessage(msg: proto.IWebMessageInfo): boolean {
+  const key = msg.key
+  if (!key?.remoteJid) return true
+  const jid = key.remoteJid
+  if (jid.endsWith("@g.us") || jid.endsWith("@broadcast") || jid === "status@broadcast") {
+    return true
+  }
+  if (key.fromMe) return true
+  if (msg.messageStubType != null && msg.messageStubType !== 0) return true
+  if (!msg.message) return true
+  return false
 }
 
 export async function handleMessagesUpsert(
@@ -243,12 +262,11 @@ export async function handleMessagesUpsert(
   messages: proto.IWebMessageInfo[]
 ) {
   for (const msg of messages) {
-    const key = msg.key
-    if (!msg.message || !key?.remoteJid || key.remoteJid.endsWith("@g.us")) continue
-    if (key.fromMe) continue
-    const remoteJid = key.remoteJid
-    const text = extractText(msg.message)
-    if (!text) continue
+    if (shouldSkipInboundMessage(msg)) continue
+    const key = msg.key!
+    const remoteJid = key.remoteJid!
+    const text = extractText(msg.message)?.trim()
+    if (!text || text === "[mensagem]") continue
     await persistInboundMessage({
       connectionId,
       clinicId,
@@ -256,6 +274,7 @@ export async function handleMessagesUpsert(
       waMessageId: key.id ?? null,
       fromMe: !!key.fromMe,
       text,
+      pushName: msg.pushName ?? null,
       sentAt: msg.messageTimestamp
         ? new Date(Number(msg.messageTimestamp) * 1000)
         : new Date(),

@@ -241,10 +241,14 @@ model WhatsappChat {
   patientId     String?
   remoteJid     String
   phoneDigits   String
-  lastMessage   String?
-  lastMessageAt DateTime?
-  unreadCount   Int                @default(0)
-  aiPaused      Boolean            @default(false)
+  lastMessage         String?
+  lastMessageAt       DateTime?
+  lastMessageFromMe   Boolean            @default(false)
+  contactName         String?
+  profilePictureUrl   String?
+  profilePictureFetchedAt DateTime?
+  unreadCount         Int                @default(0)
+  aiPaused            Boolean            @default(false)
   aiContextJson String?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt

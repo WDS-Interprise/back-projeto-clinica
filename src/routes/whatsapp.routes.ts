@@ -8,6 +8,7 @@ import {
   disconnect,
   getSettings,
   getStatus,
+  getChatAvatar,
   listChatMessages,
   listChats,
   listConnections,
@@ -21,6 +22,7 @@ import {
   updateSettings,
   updateTemplate,
   updateChatAi,
+  setChatComposing,
 } from "@/controllers/whatsapp.controller.js"
 
 export default async function whatsappRoutes(app: FastifyInstance) {
@@ -41,8 +43,10 @@ export default async function whatsappRoutes(app: FastifyInstance) {
 
   app.get("/chats", send, listChats)
   app.post("/chats", send, createChat)
+  app.get("/chats/:chatId/avatar", send, getChatAvatar)
   app.get("/chats/:chatId/messages", send, listChatMessages)
   app.patch("/chats/:chatId/ai", send, updateChatAi)
+  app.post("/chats/:chatId/composing", send, setChatComposing)
   app.post("/connections/:id/messages", send, sendMessage)
 
   app.get("/templates", send, listTemplates)

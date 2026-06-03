@@ -10,6 +10,7 @@ import pino from "pino"
 import prisma from "@/lib/prisma.js"
 import { WHATSAPP_STATUS, type WhatsappStatus } from "./status.js"
 import { clearDbAuthState, useDbAuthState } from "./auth-db.js"
+import { setContactComposing } from "./contact-presence-store.js"
 import { handleMessagesUpsert } from "./message-store.js"
 import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, tryNormalizeWhatsappPhone } from "./phone.js"
 
@@ -127,8 +128,23 @@ async function createSocket(connectionId: string, resetAuth = false) {
 }
 
 function bindMessageHandlers(connectionId: string, sock: WASocket) {
+  sock.ev.on("presence.update", ({ id, presences }) => {
+    if (!id || !presences) return
+    for (const entry of Object.values(presences)) {
+      const state = entry?.lastKnownPresence
+      if (state === "composing" || state === "recording") {
+        setContactComposing(id, true)
+        return
+      }
+      if (state === "available" || state === "paused" || state === "unavailable") {
+        setContactComposing(id, false)
+      }
+    }
+  })
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify" && type !== "append") return
+    // "append" = histórico/sincronização — gera avalanche de mensagens duplicadas na plataforma
+    if (type !== "notify") return
     try {
       const conn = await prisma.whatsappConnection.findUnique({
         where: { id: connectionId },
