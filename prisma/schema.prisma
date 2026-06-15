@@ -122,6 +122,44 @@ enum PrescriptionShareStatus {
   FAILED
 }
 
+enum FinancialTransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum FinancialCategoryKind {
+  INCOME
+  EXPENSE
+}
+
+enum FinancialTransactionStatus {
+  PENDING
+  PAID
+  CANCELLED
+}
+
+enum InventoryMovementType {
+  IN
+  OUT
+  ADJUST
+}
+
+enum TissGuideStatus {
+  DRAFT
+  SENT
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum SatisfactionSendStatus {
+  PENDING
+  SENT
+  ANSWERED
+  EXPIRED
+}
+
 model Clinic {
   id           String        @id @default(cuid())
   name         String
@@ -134,6 +172,11 @@ model Clinic {
   lunchEndTime        String   @default("13:00")
   slotIntervalMinutes Int      @default(30)
   inviteCode          String?  @unique
+  cnes                String?
+  addressStreet       String?
+  addressCity         String?
+  addressState        String?
+  addressZip          String?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   users            UserClinic[]
@@ -148,12 +191,23 @@ model Clinic {
   whatsappChats        WhatsappChat[]
   prescriptions        Prescription[]
   prescriptionTemplates PrescriptionTemplate[]
+  financialAccounts    FinancialAccount[]
+  financialCategories  FinancialCategory[]
+  costCenters          CostCenter[]
+  paymentMethods       PaymentMethod[]
+  financialTransactions FinancialTransaction[]
+  financeSettings      ClinicFinanceSettings?
+  inventoryProducts    InventoryProduct[]
+  inventoryMovements   InventoryMovement[]
+  tissGuides           TissGuide[]
+  satisfactionSurveys  SatisfactionSurvey[]
 }
 
 model User {
   id              String               @id @default(cuid())
   name            String
   email           String               @unique
+  googleId        String?              @unique
   password        String
   role            Role                 @default(ADMIN)
   active          Boolean              @default(true)
@@ -381,8 +435,13 @@ model Patient {
   phoneHome      String?
   whatsapp       String?
   cpf            String          @unique
+  rg             String?
+  patientCode    String?
   birthDate      DateTime
   gender         Gender
+  civilName      String?
+  socialGender   String?
+  referralSource String?
   address        String?
   bloodType      String?
   allergies      String          @default("")
@@ -404,6 +463,9 @@ model Patient {
   agendaNotes    AgendaNote[]
   whatsappChats  WhatsappChat[]
   prescriptions  Prescription[]
+  financialTransactions FinancialTransaction[]
+  tissGuides           TissGuide[]
+  satisfactionSurveys  SatisfactionSurvey[]
 }
 
 model Doctor {
@@ -426,6 +488,8 @@ model Doctor {
   receptionistLinks ReceptionistDoctor[]
   waitingList       WaitingListEntry[]
   agendaNotes       AgendaNote[]
+  financialTransactions FinancialTransaction[]
+  tissGuides           TissGuide[]
 }
 
 model Procedure {
@@ -436,6 +500,7 @@ model Procedure {
   createdAt    DateTime               @default(now())
   updatedAt    DateTime               @updatedAt
   appointments AppointmentProcedure[]
+  financialTransactions FinancialTransaction[]
 }
 
 model WaitingListEntry {
@@ -516,6 +581,9 @@ model Appointment {
   reminderLogs        AppointmentReminderLog[]
   whatsappOutbox      WhatsappOutbox[]
   prescriptions       Prescription[]
+  financialTransactions FinancialTransaction[]
+  tissGuides           TissGuide[]
+  satisfactionSurveys  SatisfactionSurvey[]
 }
 
 model AppointmentProcedure {
@@ -746,6 +814,196 @@ model PrescriptionShare {
   prescription   Prescription             @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
 
   @@index([prescriptionId])
+}
+
+model FinancialAccount {
+  id             String   @id @default(cuid())
+  clinicId       String
+  name           String
+  initialBalance Decimal  @default(0)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  clinic         Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  transactions   FinancialTransaction[] @relation("AccountTransactions")
+  transfersFrom  FinancialTransaction[] @relation("TransferFromAccount")
+  transfersTo    FinancialTransaction[] @relation("TransferToAccount")
+
+  @@index([clinicId, active])
+}
+
+model FinancialCategory {
+  id        String                @id @default(cuid())
+  clinicId  String
+  name      String
+  kind      FinancialCategoryKind
+  active    Boolean               @default(true)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  clinic    Clinic                @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  transactions FinancialTransaction[]
+
+  @@index([clinicId, kind, active])
+}
+
+model CostCenter {
+  id        String   @id @default(cuid())
+  clinicId  String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clinic    Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  transactions FinancialTransaction[]
+
+  @@index([clinicId, active])
+}
+
+model PaymentMethod {
+  id        String   @id @default(cuid())
+  clinicId  String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clinic    Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  transactions FinancialTransaction[]
+
+  @@index([clinicId, active])
+}
+
+model FinancialTransaction {
+  id              String                     @id @default(cuid())
+  clinicId        String
+  type            FinancialTransactionType
+  status          FinancialTransactionStatus @default(PENDING)
+  description     String
+  amount          Decimal
+  date            DateTime
+  dueDate         DateTime?
+  paidAt          DateTime?
+  accountId       String?
+  transferFromId  String?
+  transferToId    String?
+  categoryId      String?
+  costCenterId    String?
+  paymentMethodId String?
+  patientId       String?
+  doctorId        String?
+  procedureId     String?
+  appointmentId   String?
+  insurancePlan   String?
+  notes           String?
+  createdById     String
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  clinic          Clinic                     @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  account         FinancialAccount?          @relation("AccountTransactions", fields: [accountId], references: [id], onDelete: SetNull)
+  transferFrom    FinancialAccount?          @relation("TransferFromAccount", fields: [transferFromId], references: [id], onDelete: SetNull)
+  transferTo      FinancialAccount?          @relation("TransferToAccount", fields: [transferToId], references: [id], onDelete: SetNull)
+  category        FinancialCategory?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  costCenter      CostCenter?                @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+  paymentMethod   PaymentMethod?             @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  patient         Patient?                   @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  doctor          Doctor?                    @relation(fields: [doctorId], references: [id], onDelete: SetNull)
+  procedure       Procedure?                 @relation(fields: [procedureId], references: [id], onDelete: SetNull)
+  appointment     Appointment?               @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([clinicId, date])
+  @@index([clinicId, type, status])
+  @@index([patientId])
+  @@index([doctorId])
+}
+
+model ClinicFinanceSettings {
+  id                      String   @id @default(cuid())
+  clinicId                String   @unique
+  defaultAccountId        String?
+  defaultCostCenterId     String?
+  defaultPaymentMethodId  String?
+  autoGenerateOnAppointment Boolean @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  clinic                  Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+model InventoryProduct {
+  id           String   @id @default(cuid())
+  clinicId     String
+  name         String
+  sku          String?
+  unit         String   @default("un")
+  minStock     Int      @default(0)
+  currentStock Int      @default(0)
+  expiryDate   DateTime?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  clinic       Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  movements    InventoryMovement[]
+
+  @@index([clinicId, active])
+  @@index([clinicId, name])
+}
+
+model InventoryMovement {
+  id          String                @id @default(cuid())
+  clinicId    String
+  productId   String
+  type        InventoryMovementType
+  quantity    Int
+  notes       String?
+  createdById String
+  createdAt   DateTime              @default(now())
+  clinic      Clinic                @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  product     InventoryProduct      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId, createdAt])
+  @@index([productId])
+}
+
+model TissGuide {
+  id            String         @id @default(cuid())
+  clinicId      String
+  appointmentId String?
+  patientId     String?
+  doctorId      String?
+  insurancePlan String         @default("Particular")
+  guideNumber   String?
+  status        TissGuideStatus @default(DRAFT)
+  procedureCode String?
+  procedureName String?
+  amount        Decimal?
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  clinic        Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointment   Appointment?   @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  patient       Patient?       @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  doctor        Doctor?        @relation(fields: [doctorId], references: [id], onDelete: SetNull)
+
+  @@index([clinicId, status])
+  @@index([appointmentId])
+}
+
+model SatisfactionSurvey {
+  id            String                 @id @default(cuid())
+  clinicId      String
+  appointmentId String?
+  patientId     String?
+  rating        Int?
+  comment       String?
+  sendStatus    SatisfactionSendStatus @default(PENDING)
+  sentAt        DateTime?
+  answeredAt    DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  clinic        Clinic                 @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointment   Appointment?           @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  patient       Patient?               @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  @@index([clinicId, sendStatus])
+  @@index([appointmentId])
 }
 
 /// Stub para assinatura digital (fase futura).

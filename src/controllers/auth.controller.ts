@@ -3,6 +3,22 @@ import type { FastifyRequest, FastifyReply } from "fastify"
 import * as authService from "@/services/auth.service.js"
 
 import { resolveUserAvatarUrl, uploadUserAvatar } from "@/services/avatar.service.js"
+import { isGoogleOAuthConfigured } from "@/lib/env.js"
+import {
+  buildGoogleCallbackFrontendUrl,
+  createGoogleOAuthState,
+  exchangeGoogleCode,
+  getGoogleAuthRedirectUrl,
+  verifyGoogleOAuthState,
+} from "@/services/google-oauth.service.js"
+
+const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
+  google_denied: "Login com Google cancelado.",
+  google_invalid_state: "Sessao expirada. Tente novamente.",
+  google_no_email: "Conta Google sem e-mail disponivel.",
+  google_failed: "Nao foi possivel entrar com Google.",
+  google_inactive: "Usuario inativo.",
+}
 
 
 
@@ -383,5 +399,53 @@ export async function updateMe(req: FastifyRequest, reply: FastifyReply) {
 
   }
 
+}
+
+export async function googleAuthStart(_req: FastifyRequest, reply: FastifyReply) {
+  if (!isGoogleOAuthConfigured()) {
+    return reply.status(503).send({ error: "Login com Google nao configurado no servidor" })
+  }
+
+  const state = createGoogleOAuthState()
+  return reply.redirect(getGoogleAuthRedirectUrl(state))
+}
+
+export async function googleAuthCallback(req: FastifyRequest, reply: FastifyReply) {
+  const query = req.query as { code?: string; state?: string; error?: string }
+
+  if (query.error) {
+    return reply.redirect(buildGoogleCallbackFrontendUrl({ error: "google_denied" }))
+  }
+
+  if (!query.code || !query.state || !verifyGoogleOAuthState(query.state)) {
+    return reply.redirect(buildGoogleCallbackFrontendUrl({ error: "google_invalid_state" }))
+  }
+
+  try {
+    const googleUser = await exchangeGoogleCode(query.code)
+    if (!googleUser.email) {
+      return reply.redirect(buildGoogleCallbackFrontendUrl({ error: "google_no_email" }))
+    }
+
+    const result = await authService.loginWithGoogle({
+      googleId: googleUser.id,
+      email: googleUser.email,
+      name: googleUser.name,
+      picture: googleUser.picture,
+    })
+
+    return reply.redirect(buildGoogleCallbackFrontendUrl({ token: result.token }))
+  } catch (error: any) {
+    if (error.code === "USER_INACTIVE") {
+      return reply.redirect(buildGoogleCallbackFrontendUrl({ error: "google_inactive" }))
+    }
+    req.log.error(error)
+    return reply.redirect(buildGoogleCallbackFrontendUrl({ error: "google_failed" }))
+  }
+}
+
+export function googleAuthErrorMessage(code: string | null | undefined) {
+  if (!code) return GOOGLE_ERROR_MESSAGES.google_failed
+  return GOOGLE_ERROR_MESSAGES[code] ?? GOOGLE_ERROR_MESSAGES.google_failed
 }
 

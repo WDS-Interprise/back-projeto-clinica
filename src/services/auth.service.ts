@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs"
+import crypto from "crypto"
 import jwt from "jsonwebtoken"
 import prisma from "@/lib/prisma.js"
 import { getPermissionsForRole, getRedirectPath } from "@/lib/permissions.js"
@@ -38,16 +39,17 @@ async function loadUserClinics(userId: string) {
   }))
 }
 
-export async function login(email: string, password: string) {
-  const user = await prisma.user.findUnique({
-    where: { email },
-    include: { doctorProfile: { select: { id: true } } },
-  })
-  if (!user) return null
+type AuthUserRow = {
+  id: string
+  name: string
+  email: string
+  role: import("@prisma/client").Role
+  active: boolean
+  isAccountAdmin: boolean
+  doctorProfile?: { id: string } | null
+}
 
-  const valid = await bcrypt.compare(password, user.password)
-  if (!valid) return null
-
+async function buildAuthSession(user: AuthUserRow) {
   if (!user.active) {
     throw Object.assign(new Error("USER_INACTIVE"), { code: "USER_INACTIVE" })
   }
@@ -110,6 +112,77 @@ export async function login(email: string, password: string) {
     needsOnboarding: false,
     provisionedByClinic,
   }
+}
+
+export async function login(email: string, password: string) {
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { doctorProfile: { select: { id: true } } },
+  })
+  if (!user) return null
+
+  const valid = await bcrypt.compare(password, user.password)
+  if (!valid) return null
+
+  try {
+    return await buildAuthSession(user)
+  } catch (error: any) {
+    if (error.code === "USER_INACTIVE") throw error
+    throw error
+  }
+}
+
+export async function loginWithGoogle(profile: {
+  googleId: string
+  email: string
+  name: string
+  picture?: string
+}) {
+  const email = profile.email.trim().toLowerCase()
+  const includeDoctor = { doctorProfile: { select: { id: true } } } as const
+
+  let user = await prisma.user.findFirst({
+    where: { OR: [{ googleId: profile.googleId }, { email }] },
+    include: includeDoctor,
+  })
+
+  if (user) {
+    const updates: {
+      googleId?: string
+      profileImage?: string
+      name?: string
+    } = {}
+
+    if (!user.googleId) updates.googleId = profile.googleId
+    if (profile.picture && !user.profileImage) updates.profileImage = profile.picture
+    if (profile.name?.trim() && user.name !== profile.name.trim()) {
+      updates.name = profile.name.trim()
+    }
+
+    if (Object.keys(updates).length > 0) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: updates,
+        include: includeDoctor,
+      })
+    }
+  } else {
+    const hashed = await bcrypt.hash(crypto.randomUUID(), 10)
+    user = await prisma.user.create({
+      data: {
+        name: profile.name.trim() || email.split("@")[0] || "Usuario",
+        email,
+        googleId: profile.googleId,
+        password: hashed,
+        profileImage: profile.picture,
+        role: "ADMIN",
+        active: true,
+      },
+      include: includeDoctor,
+    })
+  }
+
+  return buildAuthSession(user)
 }
 
 export async function register(data: {
@@ -197,6 +270,27 @@ export async function completeOnboarding(
     where: { userId, active: true },
   })
   if (existingLink) {
+    const mappedRole = ROLE_LABEL_MAP[data.roleLabel] ?? undefined
+    const clinicNameTrim = data.clinicName?.trim()
+
+    await prisma.$transaction(async (tx) => {
+      if (mappedRole) {
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            role: mappedRole,
+            isAccountAdmin: mappedRole === "ADMIN",
+          },
+        })
+      }
+      if (clinicNameTrim && existingLink.isClinicAdmin) {
+        await tx.clinic.update({
+          where: { id: existingLink.clinicId },
+          data: { name: clinicNameTrim },
+        })
+      }
+    })
+
     const me = await getMe(userId, existingLink.clinicId)
     if (!me) throw new Error("NOT_FOUND")
     const provisionedByClinic = await isProvisionedByClinic(userId, existingLink.clinicId)
