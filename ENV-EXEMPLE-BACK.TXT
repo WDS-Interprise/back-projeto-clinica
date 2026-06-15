@@ -1,0 +1,47 @@
+#DATABASE_URL="postgresql://mwr_api_6c0d98d4c4411738:2lAitxE5YCkXvhHzR7LEaIy4SdgpTPOAA1!@localhost:5432/clinca_clean?sslmode=disable&schema=public"
+DATABASE_URL="postgresql://clinmax:SUA_SENHA_FORTE_AQUI@127.0.0.1:5435/clinmax?schema=public"
+JWT_SECRET="clinicare-jwt-secret-dev-2026"
+JWT_EXPIRES="7d"
+PORT=3001
+
+
+
+BULAPI_KEY=""
+BULAPI_BASE_URL="https://bulapi.com.br/api/v1"
+BULAPI_TIMEOUT_MS=10000
+TUSS_BASE_URL="https://brasilapi.com.br/api/tuss/v1"
+TUSS_TIMEOUT_MS=10000
+ANVISA_BASE_URL="https://consultas.anvisa.gov.br"
+ANVISA_TIMEOUT_MS=15000
+BULA_CACHE_TTL_DAYS=7
+CONSULTAREMEDIOS_BASE_URL="https://consultaremedios.com.br"
+CONSULTAREMEDIOS_TIMEOUT_MS=20000
+PHARMADB_API_KEY=""
+PHARMADB_BASE_URL="https://api.pharmadb.com.br"
+PHARMADB_TIMEOUT_MS=15000
+
+OPENROUTER_API_KEY=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
+OPENROUTER_MODEL=nvidia/nemotron-nano-9b-v2:free
+OPENROUTER_MODEL_FALLBACKS=openai/gpt-oss-20b:free,qwen/qwen3-4b:free,z-ai/glm-4.5-air:free
+
+# --- GenInfra bucket "clinica-imagem" (HTTP API — não usar S3 direto) ---
+# Integração: POST upload-url → PUT na URL assinada → GET list → GET download-url
+# Token só no header Bearer; URLs curtas sem bkt_ na path
+STORAGE_ENDPOINT=https://storage.geninfra.com.br
+STORAGE_BUCKET=mwr-user-files
+STORAGE_AVATAR_PREFIX=users/a6cca607-6403-4dd2-8c64-8fd51ca30e2f/buckets/clinica-imagem
+STORAGE_REGION=us-east-1
+STORAGE_ACCESS_KEY_ID=wk_d96c83038e884760aa2ccec0
+STORAGE_CONNECTION_TOKEN=bkt_d96c8303-8e88-4760-aa2c-cec0569c0934_8bff3ef5a78c085ba0ae08a8fe938ec59709985816316385c9afbecc5ef2e0fc
+STORAGE_BUCKETS_API_BASE=https://api.geninfra.com.br/api/workspace/buckets
+STORAGE_LIST_FILES_URL=https://api.geninfra.com.br/api/workspace/buckets/connection/files
+STORAGE_CREATE_UPLOAD_URL_ENDPOINT=https://api.geninfra.com.br/api/workspace/buckets/connection/files/upload-url
+STORAGE_DOWNLOAD_URL_TEMPLATE=https://api.geninfra.com.br/api/workspace/buckets/connection/files/{fileId}/download-url
+
+# --- Google OAuth (login social) ---
+# Console: https://console.cloud.google.com/apis/credentials
+# Redirect URI dev: http://localhost:3001/api/auth/google/callback
+FRONTEND_URL=http://localhost:5173
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+# GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/google/callback

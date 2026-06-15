@@ -15,6 +15,9 @@ export type Permission =
   | "users:manage"
   | "clinics:manage"
   | "whatsapp:send"
+  | "finance:view"
+  | "finance:manage"
+  | "reports:view"
 
 const ROLE_PERMISSIONS: Record<string, Permission[]> = {
   ADMIN: [
@@ -34,6 +37,9 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "users:manage",
     "clinics:manage",
     "whatsapp:send",
+    "finance:view",
+    "finance:manage",
+    "reports:view",
   ],
   DOCTOR: [
     "agenda:view",
@@ -58,6 +64,9 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "patients:edit_basic",
     "records:view",
     "whatsapp:send",
+    "finance:view",
+    "finance:manage",
+    "reports:view",
   ],
 }
 

@@ -1,10 +1,15 @@
 import prisma from "@/lib/prisma.js"
-import { startOfDay, endOfDay } from "date-fns"
+import { startOfDay, endOfDay, subDays } from "date-fns"
 import { appointmentDoctorFilter } from "@/lib/auth-context.js"
 import type { AuthContext } from "@/types/index.js"
 
 function clinicWhere(ctx: AuthContext) {
   return { clinicId: ctx.clinicId, ...appointmentDoctorFilter(ctx) }
+}
+
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(":").map(Number)
+  return h * 60 + (m ?? 0)
 }
 
 export async function getStats(ctx: AuthContext) {
@@ -72,6 +77,60 @@ export async function getPanelMetrics(ctx: AuthContext) {
     where: { id: { in: procedures.map((p) => p.procedureId) } },
   })
 
+  const todayPatients = await prisma.patient.findMany({
+    where: { clinicId: ctx.clinicId, active: true },
+    select: { id: true, name: true, birthDate: true, phone: true },
+  })
+
+  const today = new Date()
+  const birthdaysToday = todayPatients
+    .filter(
+      (p) =>
+        p.birthDate.getDate() === today.getDate() &&
+        p.birthDate.getMonth() === today.getMonth()
+    )
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      phone: p.phone,
+      age: today.getFullYear() - p.birthDate.getFullYear(),
+    }))
+
+  const ageBuckets = [
+    { label: "0-17", min: 0, max: 17 },
+    { label: "18-39", min: 18, max: 39 },
+    { label: "40-59", min: 40, max: 59 },
+    { label: "60+", min: 60, max: 200 },
+  ]
+  const ageDistribution = ageBuckets.map((b) => ({
+    label: b.label,
+    count: todayPatients.filter((p) => {
+      const age = today.getFullYear() - p.birthDate.getFullYear()
+      return age >= b.min && age <= b.max
+    }).length,
+  }))
+
+  const periodStart = subDays(todayStart, 30)
+  const completedInPeriod = await prisma.appointment.findMany({
+    where: {
+      clinicId: ctx.clinicId,
+      ...appointmentDoctorFilter(ctx),
+      type: "SCHEDULE",
+      status: "COMPLETED",
+      date: { gte: periodStart, lte: todayEnd },
+    },
+    select: { startTime: true, endTime: true },
+  })
+
+  let avgDurationMinutes: number | null = null
+  if (completedInPeriod.length > 0) {
+    const totalMinutes = completedInPeriod.reduce(
+      (sum, apt) => sum + Math.max(0, timeToMinutes(apt.endTime) - timeToMinutes(apt.startTime)),
+      0
+    )
+    avgDurationMinutes = Math.round(totalMinutes / completedInPeriod.length)
+  }
+
   return {
     scheduled,
     confirmed,
@@ -87,7 +146,9 @@ export async function getPanelMetrics(ctx: AuthContext) {
       count: p._count.procedureId,
     })),
     appointmentsInPeriod: scheduled + confirmed + completed + noShow,
-    avgDurationMinutes: 32,
+    avgDurationMinutes,
+    birthdaysToday,
+    ageDistribution,
   }
 }
 

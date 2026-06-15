@@ -175,16 +175,26 @@ export async function validateUserUpdate(
 }
 
 export async function validatePatientCreate(
-  data: { name: string; email?: string | null; cpf: string },
+  data: { name: string; email?: string | null; cpf: string; phone?: string },
   clinicId: string
 ) {
   const fields: DuplicateFieldErrors = {}
   const name = data.name.trim()
-  const cpf = normalizeCpf(data.cpf)
+  let cpf = normalizeCpf(data.cpf || "")
+  const phoneDigits = (data.phone ?? "").replace(/\D/g, "")
   const email =
     data.email && String(data.email).trim()
       ? String(data.email).trim().toLowerCase()
       : null
+
+  if (cpf.length !== 11 && phoneDigits.length < 10) {
+    fields.cpf = "Informe CPF valido ou telefone com DDD"
+    throwIfAny(fields)
+  }
+
+  if (cpf.length !== 11) {
+    cpf = `9${Date.now().toString().slice(-10)}`
+  }
 
   await checkCpf(cpf, fields)
   await checkPatientNameInClinic(name, clinicId, fields)

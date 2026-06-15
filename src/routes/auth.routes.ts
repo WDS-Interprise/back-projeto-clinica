@@ -9,6 +9,8 @@ import {
   uploadMeAvatar,
   completeOnboarding,
   updateMe,
+  googleAuthStart,
+  googleAuthCallback,
 } from "@/controllers/auth.controller.js"
 
 const loginSchema = z.object({
@@ -69,6 +71,8 @@ export default async function (app: FastifyInstance) {
   })
 
   app.post("/login", { preHandler: [validate(loginSchema)] }, login)
+  app.get("/google", googleAuthStart)
+  app.get("/google/callback", googleAuthCallback)
   app.post("/register", { preHandler: [validate(registerSchema)] }, register)
   app.post(
     "/complete-onboarding",

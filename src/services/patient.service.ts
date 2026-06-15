@@ -64,7 +64,10 @@ function mapPatientData(data: any, clinicId: string) {
     mapped.birthDate = new Date(data.birthDate)
   }
   if (data.email === "") mapped.email = null
-  if (typeof data.cpf === "string") mapped.cpf = normalizeCpf(data.cpf)
+  if (typeof data.cpf === "string") {
+    const cpfDigits = normalizeCpf(data.cpf)
+    mapped.cpf = cpfDigits.length === 11 ? cpfDigits : `9${Date.now().toString().slice(-10)}`
+  }
   if (data.phoneHome === "") mapped.phoneHome = null
   if (data.whatsapp === "") mapped.whatsapp = null
   if (data.insuranceCard === "") mapped.insuranceCard = null
@@ -84,11 +87,15 @@ function stripClinicalFields(data: any) {
 
 export async function create(ctx: AuthContext, data: any) {
   await validatePatientCreate(
-    { name: data.name, email: data.email, cpf: data.cpf },
+    { name: data.name, email: data.email, cpf: data.cpf, phone: data.phone },
     ctx.clinicId
   )
 
   let payload = mapPatientData(data, ctx.clinicId)
+  const phoneDigits = String(payload.phone ?? "").replace(/\D/g, "")
+  if (phoneDigits.length < 10) {
+    payload.phone = phoneDigits.padEnd(10, "0")
+  }
   if (ctx.role === "RECEPTION") {
     payload = stripClinicalFields(payload)
   }

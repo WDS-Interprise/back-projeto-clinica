@@ -26,6 +26,11 @@ import prescriptionsRoutes, { publicPrescriptionRoutes } from "@/routes/prescrip
 import medicamentosRoutes from "@/routes/medicamentos.routes.js"
 import examesRoutes from "@/routes/exames.routes.js"
 import vacinasRoutes from "@/routes/vacinas.routes.js"
+import financeRoutes from "@/routes/finance.routes.js"
+import reportsRoutes from "@/routes/reports.routes.js"
+import inventoryRoutes from "@/routes/inventory.routes.js"
+import tissRoutes from "@/routes/tiss.routes.js"
+import satisfactionRoutes from "@/routes/satisfaction.routes.js"
 import { JWT_SECRET, PORT } from "@/lib/env.js"
 import { resolveCorsOrigins } from "@/lib/cors.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
@@ -119,6 +124,11 @@ await app.register(prescriptionsRoutes, { prefix: "/api/prescriptions" })
 await app.register(medicamentosRoutes, { prefix: "/api/medicamentos" })
 await app.register(examesRoutes, { prefix: "/api/exames" })
 await app.register(vacinasRoutes, { prefix: "/api/vacinas" })
+await app.register(financeRoutes, { prefix: "/api/finance" })
+await app.register(reportsRoutes, { prefix: "/api/reports" })
+await app.register(inventoryRoutes, { prefix: "/api/inventory" })
+await app.register(tissRoutes, { prefix: "/api/tiss" })
+await app.register(satisfactionRoutes, { prefix: "/api/satisfaction" })
 await app.register(publicPrescriptionRoutes, { prefix: "/api/public" })
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
