@@ -1,3 +1,4 @@
+import { Role } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
 import { getPermissionsForRole, type Permission } from "@/lib/permissions.js"
 
@@ -15,7 +16,7 @@ export type ClinicRoleDto = {
 export const SYSTEM_ROLE_DEFS: Array<{
   slug: string
   name: string
-  role: string
+  role: Role
   sortOrder: number
 }> = [
   { slug: "admin", name: "Administrador", role: "ADMIN", sortOrder: 0 },
