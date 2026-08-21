@@ -36,6 +36,21 @@ export async function update(
     lunchStartTime: string
     lunchEndTime: string
     slotIntervalMinutes: number
+    spaceType?: string
+    teamSizeLabel?: string
+    billingModel?: string
+    careMode?: string
+    operatingDays?: string
+    cnpj?: string | null
+    website?: string | null
+    notes?: string | null
+    logoUrl?: string | null
+    logoFileName?: string | null
+    documentHeader?: string | null
+    addressStreet?: string | null
+    addressCity?: string | null
+    addressState?: string | null
+    addressZip?: string | null
   }>
 ) {
   return prisma.clinic.update({ where: { id }, data })

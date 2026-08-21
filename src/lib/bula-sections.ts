@@ -103,7 +103,7 @@ function normalizeHeading(line: string) {
   return line
     .trim()
     .replace(/^\d+[\.\)]\s*/, "")
-    .replace(/[:\-–—]\s*$/, "")
+    .replace(/[:\--: ]\s*$/, "")
     .toUpperCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")

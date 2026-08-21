@@ -9,6 +9,7 @@ import {
   uploadMeAvatar,
   completeOnboarding,
   updateMe,
+  switchClinic,
   googleAuthStart,
   googleAuthCallback,
 } from "@/controllers/auth.controller.js"
@@ -46,15 +47,42 @@ function validate(schema: z.ZodSchema) {
   }
 }
 
-const onboardingSchema = z.object({
-  roleLabel: z.string().min(1),
-  teamSize: z.string().min(1),
-  clinicName: z.string().optional(),
-  inviteCode: z.string().optional(),
-  crm: z.string().optional(),
-  specialty: z.string().optional(),
-  phone: z.string().optional(),
-})
+const onboardingSchema = z
+  .object({
+    path: z.enum(["create", "join"]).optional(),
+    roleLabel: z.string().min(1).optional(),
+    teamSize: z.string().min(1).optional(),
+    clinicName: z.string().optional(),
+    inviteCode: z.string().optional(),
+    crm: z.string().optional(),
+    specialty: z.string().optional(),
+    phone: z.string().optional(),
+    profession: z.string().optional(),
+    alsoTreats: z.boolean().optional(),
+    councilNumber: z.string().optional(),
+    councilUf: z.string().optional(),
+    spaceType: z.string().optional(),
+    billingModel: z.string().optional(),
+    careMode: z.string().optional(),
+    operatingDays: z.string().optional(),
+    agendaStartTime: z.string().optional(),
+    agendaEndTime: z.string().optional(),
+    slotIntervalMinutes: z.number().optional(),
+    pendingInvites: z
+      .array(
+        z.object({
+          email: z.string(),
+          role: z.enum(["ADMIN", "DOCTOR", "RECEPTION", "CONSULTANT", "FINANCE"]),
+          name: z.string().optional(),
+          profession: z.string().optional(),
+        })
+      )
+      .optional(),
+  })
+  .refine((data) => Boolean(data.inviteCode?.trim() || data.roleLabel?.trim()), {
+    message: "Informe o papel ou o codigo da clinica",
+    path: ["roleLabel"],
+  })
 
 const updateMeSchema = z.object({
   name: z.string().min(2, "Nome deve ter no minimo 2 caracteres").optional(),
@@ -80,6 +108,7 @@ export default async function (app: FastifyInstance) {
     completeOnboarding
   )
   app.get("/me", { preHandler: [app.auth] }, me)
+  app.post("/switch-clinic", { preHandler: [app.auth] }, switchClinic)
   app.get("/me/avatar", { preHandler: [app.auth] }, meAvatar)
   app.post("/me/avatar", { preHandler: [app.auth] }, uploadMeAvatar)
   app.patch("/me", { preHandler: [app.auth, validate(updateMeSchema)] }, updateMe)

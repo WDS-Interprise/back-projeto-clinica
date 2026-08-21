@@ -5,6 +5,7 @@ import {
   validateUserUpdate,
 } from "@/lib/duplicate-validation.js"
 import { validatePassword } from "@/lib/password.js"
+import { assertClinicLimit } from "@/lib/plan-entitlements.js"
 import type { Role, Gender } from "@prisma/client"
 
 export async function list(clinicId: string, role?: string) {
@@ -108,6 +109,11 @@ type CreateDoctorInput = {
 export async function createUser(data: CreateReceptionInput | CreateDoctorInput) {
   const pwdError = validatePassword(data.password)
   if (pwdError) throw Object.assign(new Error(pwdError), { code: "INVALID_PASSWORD" })
+
+  await assertClinicLimit(data.clinicId, "maxUsers")
+  if (data.role === "DOCTOR") {
+    await assertClinicLimit(data.clinicId, "maxDoctors")
+  }
 
   const normalized = await validateUserCreate({
     name: data.name,

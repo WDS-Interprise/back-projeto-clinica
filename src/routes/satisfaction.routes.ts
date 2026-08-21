@@ -5,6 +5,7 @@ import type { Permission } from "@/lib/permissions.js"
 export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
   app.addHook("preHandler", app.requirePermission("reports:view" as Permission))
+  app.addHook("preHandler", app.requirePlanFeature("SATISFACTION"))
 
   app.get("/", list)
   app.get("/summary", summary)

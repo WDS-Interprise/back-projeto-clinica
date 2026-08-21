@@ -343,6 +343,8 @@ export async function updateSettings(req: FastifyRequest, reply: FastifyReply) {
       autoRemindersEnabled?: boolean
       aiAssistantEnabled?: boolean
       aiAutoReplyEnabled?: boolean
+      aiMode?: "MANUAL" | "SUGGEST" | "AUTO_REPLY" | "AUTO_ACTIONS"
+      aiPermissions?: Record<string, boolean>
     }
     await messagingService.updateSettings(ctx, body)
     const settings = await messagingService.getSettings(ctx)

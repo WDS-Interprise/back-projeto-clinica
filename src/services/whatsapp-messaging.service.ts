@@ -10,9 +10,21 @@ import {
   typingDurationFromText,
 } from "@/whatsapp/presence.js"
 import { normalizeWhatsappPhone, phoneToJid, resolveOutboundJid, resolvePatientWhatsappDigits, tryNormalizeWhatsappPhone } from "@/whatsapp/phone.js"
+import { parseAiContext, stringifyAiContext } from "@/lib/whatsapp-ai-context.js"
 import { isOpenRouterConfigured } from "@/lib/openrouter.js"
+import {
+  parseAiPermissions,
+  stringifyAiPermissions,
+  legacyFlagsFromAiMode,
+  aiModeFromLegacy,
+  type AiMode,
+  type AiPermissions,
+} from "@/lib/ai-permissions.js"
 import { ensureChat, persistOutboundMessage } from "@/whatsapp/message-store.js"
-import { getPatientWhatsappDigits } from "@/services/whatsapp-patient-phone.service.js"
+import {
+  findPatientWhatsappChat,
+  getPatientWhatsappDigits,
+} from "@/services/whatsapp-patient-phone.service.js"
 import { ensureConnectionRuntime } from "@/services/whatsapp.service.js"
 import { scheduleChatsProfileSync } from "@/services/whatsapp-contact-profile.service.js"
 
@@ -153,6 +165,7 @@ export async function listChatMessages(ctx: AuthContext, chatId: string, limit =
   return {
     chat: {
       ...chat,
+      unreadCount: 0,
       aiComposing: isChatAiComposing(chatId),
       contactComposing: isContactComposing(chat.remoteJid),
     },
@@ -239,28 +252,49 @@ export async function sendMessageNow(params: {
 }) {
   const conn = await assertConnectionForClinic(params.clinicId, params.connectionId)
 
-  let resolvedJid = params.remoteJid
-  if (!resolvedJid && params.to?.trim()) {
+  let resolvedJid = params.remoteJid?.trim() || undefined
+  let resolvedTo = params.to?.trim() || undefined
+
+  if (!resolvedJid && params.patientId) {
+    const patientChat = await findPatientWhatsappChat(
+      params.clinicId,
+      params.patientId,
+      conn.id
+    )
+    if (patientChat) {
+      resolvedJid = patientChat.remoteJid
+      resolvedTo = resolvedTo ?? patientChat.phoneDigits
+    }
+  }
+
+  if (!resolvedJid && resolvedTo) {
     const chat = await prisma.whatsappChat.findFirst({
       where: {
         connectionId: conn.id,
-        OR: [{ phoneDigits: params.to.trim() }, { remoteJid: params.to.trim() }],
+        OR: [{ phoneDigits: resolvedTo }, { remoteJid: resolvedTo }],
       },
-      select: { remoteJid: true },
+      select: { remoteJid: true, phoneDigits: true },
     })
-    resolvedJid = chat?.remoteJid
+    if (chat) {
+      resolvedJid = chat.remoteJid
+      resolvedTo = resolvedTo ?? chat.phoneDigits
+    }
   }
 
   const jid = resolveOutboundJid({
     remoteJid: resolvedJid,
     to:
-      params.to?.trim() ??
+      resolvedTo ??
       (params.patientId
         ? await getPatientWhatsappDigits(params.clinicId, params.patientId)
         : undefined),
   })
 
-  const phoneDigits = tryNormalizeWhatsappPhone(params.to ?? "") ?? jid.split("@")[0]?.replace(/\D/g, "") ?? ""
+  const phoneDigits =
+    resolvedTo ??
+    tryNormalizeWhatsappPhone(params.to ?? "") ??
+    jid.split("@")[0]?.replace(/\D/g, "") ??
+    ""
 
   if (params.showTyping) {
     await runComposingForDuration({
@@ -334,11 +368,15 @@ export async function enqueueOutbox(params: {
   offsetHours?: number | null
   scheduledAt?: Date
 }) {
+  const raw = params.to.trim()
+  const to = tryNormalizeWhatsappPhone(raw) ?? raw.replace(/\D/g, "")
+  if (!to) throw new Error("INVALID_PHONE")
+
   return prisma.whatsappOutbox.create({
     data: {
       clinicId: params.clinicId,
       connectionId: params.connectionId,
-      to: normalizeWhatsappPhone(params.to),
+      to,
       body: params.body,
       templateId: params.templateId ?? null,
       appointmentId: params.appointmentId ?? null,
@@ -373,12 +411,22 @@ export async function processOutboxItem(outboxId: string) {
     connectionId = fallback
   }
 
+  let patientId: string | null = null
+  if (item.appointmentId) {
+    const apt = await prisma.appointment.findUnique({
+      where: { id: item.appointmentId },
+      select: { patientId: true },
+    })
+    patientId = apt?.patientId ?? null
+  }
+
   try {
     await sendMessageNow({
       clinicId: item.clinicId,
       connectionId,
       to: item.to,
       body: item.body,
+      patientId,
       appointmentId: item.appointmentId,
       templateId: item.templateId,
     })
@@ -455,14 +503,29 @@ export async function sendFromContext(
 
   const pauseDigits =
     tryNormalizeWhatsappPhone(data.to) ?? remoteJid?.split("@")[0] ?? data.to
-  await prisma.whatsappChat.updateMany({
+  const chatsToPause = await prisma.whatsappChat.findMany({
     where: {
       clinicId: ctx.clinicId,
       connectionId: conn.id,
       OR: [{ phoneDigits: pauseDigits }, ...(remoteJid ? [{ remoteJid }] : [])],
     },
-    data: { aiPaused: true },
+    select: { id: true, aiContextJson: true },
   })
+  const pausedAt = new Date().toISOString()
+  for (const row of chatsToPause) {
+    const aiCtx = parseAiContext(row.aiContextJson)
+    await prisma.whatsappChat.update({
+      where: { id: row.id },
+      data: {
+        aiPaused: true,
+        aiContextJson: stringifyAiContext({
+          ...aiCtx,
+          mode: "HUMAN_HANDOFF",
+          pausedAt,
+        }),
+      },
+    })
+  }
   return result
 }
 
@@ -488,7 +551,15 @@ export async function getSettings(ctx: AuthContext) {
   } catch {
     /* default */
   }
-  return { ...settings, reminderOffsets, connections }
+  const aiPermissions = parseAiPermissions(settings.aiPermissionsJson)
+  const aiMode = (settings.aiMode as AiMode) || aiModeFromLegacy(settings.aiAssistantEnabled, settings.aiAutoReplyEnabled)
+  return {
+    ...settings,
+    reminderOffsets,
+    connections,
+    aiMode,
+    aiPermissions,
+  }
 }
 
 export async function updateSettings(
@@ -499,20 +570,52 @@ export async function updateSettings(
     autoRemindersEnabled?: boolean
     aiAssistantEnabled?: boolean
     aiAutoReplyEnabled?: boolean
+    aiMode?: AiMode
+    aiPermissions?: Partial<AiPermissions>
   }
 ) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
   const patch: Record<string, unknown> = {}
   if (data.defaultConnectionId !== undefined) patch.defaultConnectionId = data.defaultConnectionId
   if (data.autoRemindersEnabled !== undefined) patch.autoRemindersEnabled = data.autoRemindersEnabled
-  if (data.aiAssistantEnabled !== undefined) patch.aiAssistantEnabled = data.aiAssistantEnabled
-  if (data.aiAutoReplyEnabled !== undefined) patch.aiAutoReplyEnabled = data.aiAutoReplyEnabled
+
+  if (data.aiMode !== undefined) {
+    patch.aiMode = data.aiMode
+    const flags = legacyFlagsFromAiMode(data.aiMode)
+    patch.aiAssistantEnabled = flags.aiAssistantEnabled
+    patch.aiAutoReplyEnabled = flags.aiAutoReplyEnabled
+  } else {
+    if (data.aiAssistantEnabled !== undefined) patch.aiAssistantEnabled = data.aiAssistantEnabled
+    if (data.aiAutoReplyEnabled !== undefined) patch.aiAutoReplyEnabled = data.aiAutoReplyEnabled
+    if (data.aiAssistantEnabled !== undefined || data.aiAutoReplyEnabled !== undefined) {
+      const current = await prisma.clinicWhatsappSettings.findUnique({
+        where: { clinicId: ctx.clinicId },
+      })
+      const assistant =
+        data.aiAssistantEnabled ?? current?.aiAssistantEnabled ?? false
+      const autoReply =
+        data.aiAutoReplyEnabled ?? current?.aiAutoReplyEnabled ?? false
+      patch.aiMode = aiModeFromLegacy(assistant, autoReply)
+    }
+  }
+
+  if (data.aiPermissions !== undefined) {
+    const current = await prisma.clinicWhatsappSettings.findUnique({
+      where: { clinicId: ctx.clinicId },
+    })
+    const merged = {
+      ...parseAiPermissions(current?.aiPermissionsJson),
+      ...data.aiPermissions,
+    }
+    patch.aiPermissionsJson = stringifyAiPermissions(merged)
+  }
+
   if (data.reminderOffsets !== undefined) {
     patch.reminderOffsetsJson = JSON.stringify(
       data.reminderOffsets.filter((h) => h > 0).sort((a, b) => b - a)
     )
   }
-  return prisma.clinicWhatsappSettings.upsert({
+  const updated = await prisma.clinicWhatsappSettings.upsert({
     where: { clinicId: ctx.clinicId },
     create: {
       clinicId: ctx.clinicId,
@@ -520,4 +623,5 @@ export async function updateSettings(
     },
     update: patch,
   })
+  return updated
 }

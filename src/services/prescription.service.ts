@@ -67,6 +67,22 @@ async function assertAppointmentInClinic(
   return apt
 }
 
+async function assertEncounterInClinic(
+  ctx: AuthContext,
+  encounterId: string | undefined,
+  patientId: string
+) {
+  if (!encounterId) return null
+  const enc = await prisma.encounter.findFirst({
+    where: { id: encounterId, clinicId: ctx.clinicId },
+  })
+  if (!enc) throw new Error("ENCOUNTER_NOT_FOUND")
+  if (enc.patientId !== patientId) {
+    throw new Error("ENCOUNTER_PATIENT_MISMATCH")
+  }
+  return enc
+}
+
 async function getPrescriptionOrThrow(ctx: AuthContext, id: string) {
   const rx = await prisma.prescription.findFirst({
     where: { id, clinicId: ctx.clinicId },
@@ -105,13 +121,16 @@ export async function getById(ctx: AuthContext, id: string) {
 export async function createDraft(ctx: AuthContext, input: CreatePrescriptionInput) {
   await assertPatientInClinic(ctx, input.patientId)
   await assertAppointmentInClinic(ctx, input.appointmentId, input.patientId)
+  const encounter = await assertEncounterInClinic(ctx, input.encounterId, input.patientId)
+  const appointmentId = input.appointmentId ?? encounter?.appointmentId ?? null
 
   return prisma.prescription.create({
     data: {
       clinicId: ctx.clinicId,
       patientId: input.patientId,
       professionalId: ctx.userId,
-      appointmentId: input.appointmentId ?? null,
+      appointmentId,
+      encounterId: input.encounterId ?? null,
       receiptType: input.receiptType ?? "SIMPLE",
       prescriptionDate: input.prescriptionDate ? new Date(input.prescriptionDate) : new Date(),
       showDate: input.showDate ?? true,
@@ -129,6 +148,9 @@ export async function update(ctx: AuthContext, id: string, input: UpdatePrescrip
   if (input.appointmentId !== undefined) {
     await assertAppointmentInClinic(ctx, input.appointmentId ?? undefined, rx.patientId)
   }
+  if (input.encounterId !== undefined) {
+    await assertEncounterInClinic(ctx, input.encounterId ?? undefined, rx.patientId)
+  }
 
   return prisma.prescription.update({
     where: { id },
@@ -138,6 +160,7 @@ export async function update(ctx: AuthContext, id: string, input: UpdatePrescrip
       showDate: input.showDate,
       notes: input.notes,
       appointmentId: input.appointmentId,
+      encounterId: input.encounterId,
     },
     include: prescriptionInclude,
   })

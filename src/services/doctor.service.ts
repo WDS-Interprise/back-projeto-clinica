@@ -1,14 +1,19 @@
 import prisma from "@/lib/prisma.js"
 import type { AuthContext } from "@/types/index.js"
+import { doctorInClinicWhere } from "@/lib/doctor-clinic.js"
 
 export async function list(
   ctx: AuthContext | null,
   params: { available?: boolean; specialty?: string }
 ) {
-  const where: Record<string, any> = {}
+  const where: Record<string, unknown> = {}
 
   if (params.available !== undefined) where.available = params.available
   if (params.specialty) where.specialty = { contains: params.specialty }
+
+  if (ctx?.clinicId) {
+    Object.assign(where, doctorInClinicWhere(ctx.clinicId))
+  }
 
   if (ctx?.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
     where.id = { in: ctx.linkedDoctorIds }

@@ -28,7 +28,7 @@ const DEFAULT_TEMPLATES = [
   {
     name: "Lembrete de consulta",
     category: "APPOINTMENT_REMINDER",
-    body: "Olá {{nome}}, lembramos seu agendamento{{procedimento}} em {{data}} às {{hora}} com {{medico}}. — {{clinica}}",
+    body: "Olá {{nome}}, lembramos seu agendamento{{procedimento}} em {{data}} às {{hora}} com {{medico}}.. {{clinica}}",
     sortOrder: 0,
   },
   {
@@ -38,10 +38,16 @@ const DEFAULT_TEMPLATES = [
     sortOrder: 1,
   },
   {
+    name: "Remarcação de consulta",
+    category: "APPOINTMENT_RESCHEDULE",
+    body: "Olá {{nome}}, sua consulta na {{clinica}} foi remarcada para {{data}} às {{hora}} com {{medico}}. Qualquer dúvida, responda esta mensagem.",
+    sortOrder: 2,
+  },
+  {
     name: "Mensagem livre",
     category: "MANUAL",
     body: "Olá {{nome}}, tudo bem? Entramos em contato pela {{clinica}}.",
-    sortOrder: 2,
+    sortOrder: 3,
   },
 ] as const
 
@@ -118,6 +124,19 @@ export async function getDefaultReminderTemplate(ctx: AuthContext) {
     where: {
       clinicId: ctx.clinicId,
       category: "APPOINTMENT_REMINDER",
+      active: true,
+    },
+    orderBy: { sortOrder: "asc" },
+  })
+}
+
+export async function getDefaultRescheduleTemplate(ctx: AuthContext) {
+  if (!ctx.clinicId) return null
+  await ensureDefaultWhatsappTemplates(ctx.clinicId)
+  return prisma.whatsappMessageTemplate.findFirst({
+    where: {
+      clinicId: ctx.clinicId,
+      category: "APPOINTMENT_RESCHEDULE",
       active: true,
     },
     orderBy: { sortOrder: "asc" },

@@ -16,10 +16,18 @@ enum InviteStatus {
   EXPIRED
 }
 
+enum JoinRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum Role {
   ADMIN
   DOCTOR
   RECEPTION
+  CONSULTANT
+  FINANCE
 }
 
 enum AppointmentStatus {
@@ -30,6 +38,12 @@ enum AppointmentStatus {
   CANCELLED
   NO_SHOW
   RESCHEDULED
+}
+
+enum EncounterStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
 }
 
 enum AppointmentType {
@@ -160,6 +174,60 @@ enum SatisfactionSendStatus {
   EXPIRED
 }
 
+enum PixKeyType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  EVP
+}
+
+enum PixRecipientStatus {
+  PENDING
+  VERIFIED
+  DISABLED
+}
+
+enum PlatformPaymentStatus {
+  PENDING
+  CONFIRMED
+  RECEIVED
+  REFUNDED
+  CANCELLED
+  FAILED
+}
+
+enum PlatformPayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+  EXPIRED
+}
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+enum SubscriptionInvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  REFUNDED
+  CANCELLED
+  FAILED
+}
+
 model Clinic {
   id           String        @id @default(cuid())
   name         String
@@ -171,8 +239,20 @@ model Clinic {
   lunchStartTime      String   @default("12:00")
   lunchEndTime        String   @default("13:00")
   slotIntervalMinutes Int      @default(30)
+  spaceType           String?
+  teamSizeLabel       String?
+  billingModel        String?
+  careMode            String?
+  operatingDays       String?
   inviteCode          String?  @unique
+  inviteCodeRole      Role?
   cnes                String?
+  cnpj                String?
+  website             String?
+  notes               String?
+  logoUrl             String?
+  logoFileName        String?
+  documentHeader      String?
   addressStreet       String?
   addressCity         String?
   addressState        String?
@@ -181,13 +261,16 @@ model Clinic {
   updatedAt    DateTime      @updatedAt
   users            UserClinic[]
   invites          ClinicInvite[]
+  joinRequests     ClinicJoinRequest[]
   patients         Patient[]
   appointments     Appointment[]
+  encounters       Encounter[]
   waitingList          WaitingListEntry[]
   agendaNotes          AgendaNote[]
   whatsappConnections  WhatsappConnection[]
   whatsappTemplates    WhatsappMessageTemplate[]
   whatsappSettings     ClinicWhatsappSettings?
+  clinicRoles          ClinicRole[]
   whatsappChats        WhatsappChat[]
   prescriptions        Prescription[]
   prescriptionTemplates PrescriptionTemplate[]
@@ -197,6 +280,12 @@ model Clinic {
   paymentMethods       PaymentMethod[]
   financialTransactions FinancialTransaction[]
   financeSettings      ClinicFinanceSettings?
+  pixRecipient         ClinicPixRecipient?
+  platformPayments     PlatformPayment[]
+  platformPayouts      PlatformPayout[]
+  subscription         ClinicSubscription?
+  subscriptionInvoices SubscriptionInvoice[]
+  usagePeriods         ClinicUsagePeriod[]
   inventoryProducts    InventoryProduct[]
   inventoryMovements   InventoryMovement[]
   tissGuides           TissGuide[]
@@ -226,8 +315,10 @@ model User {
   whatsappConnections  WhatsappConnection[]
   prescriptionsCreated Prescription[]       @relation("PrescriptionProfessional")
   prescriptionTemplates PrescriptionTemplate[]
+  encounterAddendums   EncounterAddendum[]  @relation("EncounterAddendumAuthor")
   invitesSent          ClinicInvite[]         @relation("InvitesSent")
   invitesAccepted      ClinicInvite[]         @relation("InvitesAccepted")
+  joinRequests         ClinicJoinRequest[]
 }
 
 /// Conexão WhatsApp (Baileys) — uma sessão por registro, vinculada à clínica e ao usuário que conectou.
@@ -265,9 +356,29 @@ model ClinicWhatsappSettings {
   autoRemindersEnabled Boolean  @default(true)
   aiAssistantEnabled   Boolean  @default(false)
   aiAutoReplyEnabled   Boolean  @default(false)
+  aiMode               String   @default("MANUAL")
+  aiPermissionsJson    String   @default("{}")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   clinic               Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+/// Cargo configurável por clínica (substitui mapa fixo role → permissões).
+model ClinicRole {
+  id              String       @id @default(cuid())
+  clinicId        String
+  slug            String
+  name            String
+  isSystem        Boolean      @default(false)
+  permissionsJson String       @default("[]")
+  sortOrder       Int          @default(0)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  clinic          Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  members         UserClinic[]
+
+  @@unique([clinicId, slug])
+  @@index([clinicId])
 }
 
 /// Template de mensagem com placeholders {{nome}}, {{data}}, etc.
@@ -381,15 +492,17 @@ model WhatsappAuthState {
 }
 
 model UserClinic {
-  id            String   @id @default(cuid())
+  id            String      @id @default(cuid())
   userId        String
   clinicId      String
-  isClinicAdmin Boolean  @default(false)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  clinic        Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  clinicRoleId  String?
+  isClinicAdmin Boolean     @default(false)
+  active        Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinic        Clinic      @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  clinicRole    ClinicRole? @relation(fields: [clinicRoleId], references: [id], onDelete: SetNull)
 
   @@unique([userId, clinicId])
 }
@@ -415,6 +528,25 @@ model ClinicInvite {
   @@index([email])
 }
 
+model ClinicJoinRequest {
+  id             String            @id @default(cuid())
+  clinicId       String
+  userId         String
+  requestedRole  Role?
+  status         JoinRequestStatus @default(PENDING)
+  profession     String?
+  crm            String?
+  specialty      String?
+  createdAt      DateTime          @default(now())
+  reviewedAt     DateTime?
+  reviewedById   String?
+  clinic         Clinic            @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId, status])
+  @@index([userId, status])
+}
+
 model ReceptionistDoctor {
   id             String   @id @default(cuid())
   receptionistId String
@@ -431,10 +563,10 @@ model Patient {
   clinicId       String?
   name           String
   email          String?
-  phone          String
+  phone          String          @default("")
   phoneHome      String?
   whatsapp       String?
-  cpf            String          @unique
+  cpf            String?
   rg             String?
   patientCode    String?
   birthDate      DateTime
@@ -458,6 +590,7 @@ model Patient {
   updatedAt      DateTime        @updatedAt
   clinic         Clinic?              @relation(fields: [clinicId], references: [id])
   appointments   Appointment[]
+  encounters     Encounter[]
   records        MedicalRecord[]
   waitingList    WaitingListEntry[]
   agendaNotes    AgendaNote[]
@@ -466,6 +599,10 @@ model Patient {
   financialTransactions FinancialTransaction[]
   tissGuides           TissGuide[]
   satisfactionSurveys  SatisfactionSurvey[]
+  asaasCustomerId      String?
+
+  @@unique([clinicId, cpf])
+  @@index([clinicId, phone])
 }
 
 model Doctor {
@@ -484,6 +621,7 @@ model Doctor {
   updatedAt         DateTime             @updatedAt
   user              User?                @relation(fields: [userId], references: [id])
   appointments      Appointment[]
+  encounters        Encounter[]
   records           MedicalRecord[]
   receptionistLinks ReceptionistDoctor[]
   waitingList       WaitingListEntry[]
@@ -584,6 +722,56 @@ model Appointment {
   financialTransactions FinancialTransaction[]
   tissGuides           TissGuide[]
   satisfactionSurveys  SatisfactionSurvey[]
+  platformPayments     PlatformPayment[]
+  encounters           Encounter[]
+}
+
+/// Ato clínico (prontuário da consulta). Separado do Appointment operacional.
+model Encounter {
+  id                    String          @id @default(cuid())
+  clinicId              String
+  appointmentId         String?
+  patientId             String
+  doctorId              String
+  status                EncounterStatus @default(IN_PROGRESS)
+  startedAt             DateTime?
+  endedAt               DateTime?
+  lastSavedAt           DateTime?
+  mainComplaint         String?
+  physicalExam          String?
+  currentIllnessHistory String?
+  historyAndAntecedents String?
+  conduct               String?
+  prescriptionSummary   String?
+  notes                 String?
+  cidCode               String?
+  cidDescription        String?
+  cidVersion            String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  clinic                Clinic          @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointment           Appointment?    @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  patient               Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor                Doctor          @relation(fields: [doctorId], references: [id])
+  addendums             EncounterAddendum[]
+  prescriptions         Prescription[]
+
+  @@index([clinicId, patientId, status])
+  @@index([appointmentId])
+  @@index([clinicId, doctorId, status])
+}
+
+model EncounterAddendum {
+  id          String   @id @default(cuid())
+  encounterId String
+  authorId    String
+  body        String
+  reason      String?
+  createdAt   DateTime @default(now())
+  encounter   Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  author      User      @relation("EncounterAddendumAuthor", fields: [authorId], references: [id])
+
+  @@index([encounterId, createdAt])
 }
 
 model AppointmentProcedure {
@@ -724,6 +912,7 @@ model Prescription {
   patientId        String
   professionalId   String
   appointmentId    String?
+  encounterId      String?
   status           PrescriptionStatus      @default(DRAFT)
   receiptType      PrescriptionReceiptType @default(SIMPLE)
   prescriptionDate DateTime                @default(now())
@@ -740,11 +929,13 @@ model Prescription {
   patient          Patient                 @relation(fields: [patientId], references: [id], onDelete: Cascade)
   professional     User                    @relation("PrescriptionProfessional", fields: [professionalId], references: [id])
   appointment      Appointment?            @relation(fields: [appointmentId], references: [id])
+  encounter        Encounter?              @relation(fields: [encounterId], references: [id], onDelete: SetNull)
   items            PrescriptionItem[]
   shares           PrescriptionShare[]
   signature        PrescriptionSignature?
 
   @@index([clinicId, patientId, status])
+  @@index([encounterId])
   @@index([validationCode])
 }
 
@@ -925,6 +1116,180 @@ model ClinicFinanceSettings {
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   clinic                  Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+model ClinicPixRecipient {
+  id                 String             @id @default(cuid())
+  clinicId           String             @unique
+  enabled            Boolean            @default(false)
+  pixKey             String
+  pixKeyType         PixKeyType
+  recipientName      String
+  recipientDocument  String
+  verifiedAt         DateTime?
+  status             PixRecipientStatus @default(PENDING)
+  platformFeePercent Decimal            @default(5)
+  outstandingDebit   Decimal            @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  clinic             Clinic             @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+model PlatformPayment {
+  id                    String                 @id @default(cuid())
+  clinicId              String
+  appointmentId         String
+  asaasPaymentId        String                 @unique
+  asaasCustomerId       String?
+  amountGross           Decimal
+  gatewayFee            Decimal                @default(0)
+  netAmount             Decimal                @default(0)
+  platformFee           Decimal                @default(0)
+  clinicPayoutAmount    Decimal                @default(0)
+  compensationApplied   Decimal                @default(0)
+  status                PlatformPaymentStatus  @default(PENDING)
+  pixPayload            String?
+  pixEncodedImage       String?
+  pixExpirationDate     DateTime?
+  receivedAt            DateTime?
+  refundedAt            DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  clinic                Clinic                 @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointment           Appointment            @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  payout                PlatformPayout?
+
+  @@index([clinicId, status])
+  @@index([appointmentId])
+}
+
+model PlatformPayout {
+  id                 String               @id @default(cuid())
+  paymentId          String               @unique
+  clinicId           String
+  amount             Decimal
+  pixKey             String
+  pixKeyType         PixKeyType
+  asaasTransferId    String?              @unique
+  externalReference  String               @unique
+  status             PlatformPayoutStatus @default(PENDING)
+  failReason         String?
+  paidAt             DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  payment            PlatformPayment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  clinic             Clinic               @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId, status])
+}
+
+model AsaasWebhookEvent {
+  id          String   @id @default(cuid())
+  eventKey    String   @unique
+  event       String
+  processedAt DateTime @default(now())
+}
+
+/// Plano comercial editável pelo backoffice (recursos e limites em JSON).
+model Plan {
+  id            String               @id @default(cuid())
+  name          String
+  slug          String               @unique
+  description   String?
+  active        Boolean              @default(true)
+  public        Boolean              @default(true)
+  monthlyPrice  Decimal              @default(0)
+  annualPrice   Decimal              @default(0)
+  trialDays     Int                  @default(0)
+  highlighted   Boolean              @default(false)
+  displayOrder  Int                  @default(0)
+  featuresJson  String               @default("[]")
+  limitsJson    String               @default("{}")
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  subscriptions ClinicSubscription[]
+
+  @@index([active, public, displayOrder])
+}
+
+/// Assinatura SaaS da clínica na plataforma ClinMax (separado de ClinMax Pay).
+model ClinicSubscription {
+  id                   String                 @id @default(cuid())
+  clinicId             String                 @unique
+  planId               String
+  status               SubscriptionStatus     @default(TRIAL)
+  billingCycle         BillingCycle           @default(MONTHLY)
+  startedAt            DateTime               @default(now())
+  trialStartedAt       DateTime?
+  trialEndsAt          DateTime?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                @default(false)
+  cancelledAt          DateTime?
+  courtesyUntil        DateTime?
+  asaasCustomerId      String?
+  asaasSubscriptionId  String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  clinic               Clinic                 @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  plan                 Plan                   @relation(fields: [planId], references: [id])
+  invoices             SubscriptionInvoice[]
+
+  @@index([planId, status])
+  @@index([status])
+}
+
+/// Fatura/cobrança da assinatura SaaS (não usar PlatformPayment).
+model SubscriptionInvoice {
+  id                   String                    @id @default(cuid())
+  clinicSubscriptionId String
+  clinicId             String
+  asaasPaymentId       String?                   @unique
+  amount               Decimal
+  status               SubscriptionInvoiceStatus @default(PENDING)
+  billingType          String                    @default("PIX")
+  dueDate              DateTime
+  paidAt               DateTime?
+  invoiceUrl           String?
+  pixQrCode            String?
+  pixCopyPaste         String?
+  reference            String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  subscription         ClinicSubscription      @relation(fields: [clinicSubscriptionId], references: [id], onDelete: Cascade)
+  clinic               Clinic                    @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId, status])
+  @@index([clinicSubscriptionId, dueDate])
+}
+
+/// Consumo mensal por clínica (IA, storage, etc.).
+model ClinicUsagePeriod {
+  id              String   @id @default(cuid())
+  clinicId        String
+  periodKey       String
+  aiMessagesCount Int      @default(0)
+  aiActionsCount  Int      @default(0)
+  storageUsedMb   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  clinic          Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@unique([clinicId, periodKey])
+  @@index([clinicId])
+}
+
+/// Configurações globais de billing SaaS da plataforma.
+model PlatformSettings {
+  id                  String   @id @default("platform")
+  defaultPlanId       String?
+  defaultTrialDays    Int      @default(14)
+  gracePeriodDays     Int      @default(3)
+  currency            String   @default("BRL")
+  billingEmail        String?
+  newSignupsEnabled   Boolean  @default(true)
+  settingsJson        String   @default("{}")
+  updatedAt           DateTime @updatedAt
 }
 
 model InventoryProduct {

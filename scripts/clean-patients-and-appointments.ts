@@ -14,7 +14,7 @@ async function main() {
   console.log(`Prescrições: ${prescriptionCount}`)
 
   if (dryRun) {
-    console.log("\n(dry-run — nada foi apagado)")
+    console.log("\n(dry-run. nada foi apagado)")
     return
   }
 

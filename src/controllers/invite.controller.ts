@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify"
 import { z } from "zod"
+import type { Role } from "@prisma/client"
 
 import * as inviteService from "@/services/invite.service.js"
 
@@ -10,9 +11,10 @@ function handleError(req: FastifyRequest, reply: FastifyReply, error: any) {
   if (code === "INVALID_INVITE") return reply.status(400).send({ error: error.message })
   if (code === "INVITE_EXPIRED") return reply.status(410).send({ error: error.message })
   if (code === "EMAIL_MISMATCH") return reply.status(403).send({ error: error.message })
-  if (code === "ALREADY_MEMBER") return reply.status(409).send({ error: error.message })
+  if (code === "JOIN_PENDING") return reply.status(409).send({ error: error.message })
   if (code === "INVITE_PENDING") return reply.status(409).send({ error: error.message })
   if (code === "CRM_REQUIRED") return reply.status(400).send({ error: error.message })
+  if (code === "ROLE_REQUIRED") return reply.status(400).send({ error: error.message })
   if (code === "INVALID_PASSWORD") return reply.status(400).send({ error: error.message })
   if (code === "DUPLICATE_FIELDS") {
     return reply.status(409).send({
@@ -22,6 +24,16 @@ function handleError(req: FastifyRequest, reply: FastifyReply, error: any) {
   }
   req.log.error(error)
   return reply.status(500).send({ error: "Erro interno do servidor" })
+}
+
+export async function previewClinicCode(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { code } = req.params as { code: string }
+    const result = await inviteService.previewClinicCode(code)
+    return reply.send(result)
+  } catch (error: any) {
+    return handleError(req, reply, error)
+  }
 }
 
 export async function previewInvite(req: FastifyRequest, reply: FastifyReply) {
@@ -103,7 +115,7 @@ export async function createClinicInvite(req: FastifyRequest, reply: FastifyRepl
     if (payload.clinicId !== id) {
       return reply.status(403).send({ error: "Clínica inválida para esta sessão" })
     }
-    const body = req.body as { email: string; role: "ADMIN" | "DOCTOR" | "RECEPTION" }
+    const body = req.body as { email: string; role: "ADMIN" | "DOCTOR" | "RECEPTION" | "CONSULTANT" | "FINANCE" }
     const result = await inviteService.createEmailInvite(id, payload.userId, body)
     return reply.status(201).send(result)
   } catch (error: any) {
@@ -120,6 +132,50 @@ export async function revokeClinicInvite(req: FastifyRequest, reply: FastifyRepl
     }
     await inviteService.revokeInvite(id, inviteId)
     return reply.send({ ok: true })
+  } catch (error: any) {
+    return handleError(req, reply, error)
+  }
+}
+
+export async function approveClinicJoinRequest(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const payload = req.user as { userId: string; clinicId: string }
+    const { id, requestId } = req.params as { id: string; requestId: string }
+    if (payload.clinicId !== id) {
+      return reply.status(403).send({ error: "Clínica inválida para esta sessão" })
+    }
+    const body = (req.body ?? {}) as { role?: Role }
+    const result = await inviteService.approveJoinRequest(id, requestId, payload.userId, body.role)
+    return reply.send(result)
+  } catch (error: any) {
+    return handleError(req, reply, error)
+  }
+}
+
+export async function rejectClinicJoinRequest(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const payload = req.user as { userId: string; clinicId: string }
+    const { id, requestId } = req.params as { id: string; requestId: string }
+    if (payload.clinicId !== id) {
+      return reply.status(403).send({ error: "Clínica inválida para esta sessão" })
+    }
+    const result = await inviteService.rejectJoinRequest(id, requestId, payload.userId)
+    return reply.send(result)
+  } catch (error: any) {
+    return handleError(req, reply, error)
+  }
+}
+
+export async function setClinicInviteCodeRole(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const payload = req.user as { clinicId: string }
+    const { id } = req.params as { id: string }
+    if (payload.clinicId !== id) {
+      return reply.status(403).send({ error: "Clínica inválida para esta sessão" })
+    }
+    const body = req.body as { role?: Role | null }
+    const result = await inviteService.setInviteCodeRole(id, body.role ?? null)
+    return reply.send(result)
   } catch (error: any) {
     return handleError(req, reply, error)
   }
@@ -155,9 +211,20 @@ export const joinByCodeSchema = z.object({
   specialty: z.string().optional(),
   phone: z.string().optional(),
   cpf: z.string().optional(),
+  profession: z.string().optional(),
 })
 
 export const createInviteSchema = z.object({
   email: z.string().email(),
-  role: z.enum(["ADMIN", "DOCTOR", "RECEPTION"]).default("DOCTOR"),
+  role: z.enum(["ADMIN", "DOCTOR", "RECEPTION", "CONSULTANT", "FINANCE"]).default("DOCTOR"),
+})
+
+const clinicRoleEnum = z.enum(["ADMIN", "DOCTOR", "RECEPTION", "CONSULTANT", "FINANCE"])
+
+export const approveJoinSchema = z.object({
+  role: clinicRoleEnum.optional(),
+})
+
+export const setInviteCodeRoleSchema = z.object({
+  role: clinicRoleEnum.nullable(),
 })

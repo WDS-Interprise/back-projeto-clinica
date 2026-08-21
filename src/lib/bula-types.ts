@@ -31,7 +31,7 @@ export type BulaDetailPayload = {
   classes: string[]
   fonte: string
   registro_ms?: string
-  /** MS, farmacêutico responsável, SAC, validade — bloco legal compacto */
+  /** MS, farmacêutico responsável, SAC, validade. bloco legal compacto */
   informacoes_legais?: string
   /** Fabricação, importação e distribuição */
   laboratorio?: string
@@ -51,7 +51,7 @@ export type BulaSummary = {
 }
 
 export type PaginatedBulasResponse = {
-  source: "anvisa" | "bulapi"
+  source: "anvisa" | "bulapi" | "consultaremedios" | "pharmadb" | "cache" | "aliases"
   items: BulaSummary[]
   page: number
   limit: number

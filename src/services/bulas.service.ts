@@ -15,6 +15,11 @@ import type {
   PaginatedBulasResponse,
 } from "@/lib/bula-types.js"
 import { BulaFetchError } from "@/lib/bula-types.js"
+import {
+  matchMedicineAliases,
+  findMedicineAliasByKey,
+  expandMedicineQueryTerms,
+} from "@/lib/medicine-aliases.js"
 import * as bulaCache from "@/services/bula-cache.service.js"
 
 type InternalMedicine = BulaSummary & {
@@ -35,6 +40,25 @@ const FONTE_LABELS: Record<string, string> = {
   bulapi: "Bulapi + Bulário Anvisa",
   consultaremedios: "Consulta Remédios (Bulário Anvisa)",
   pharmadb: "PharmaDB / Bulário Anvisa",
+  cache: "Cache local",
+  aliases: "Catálogo ClinMax",
+}
+
+function logSearchAttempt(params: {
+  query: string
+  provider: string
+  status: "ok" | "empty" | "error"
+  itemCount: number
+  detail?: string
+}) {
+  if (process.env.BULA_SEARCH_DEBUG !== "1" && params.status !== "ok") return
+  console.log({
+    query: params.query,
+    provider: params.provider,
+    status: params.status,
+    itemCount: params.itemCount,
+    ...(params.detail ? { detail: params.detail } : {}),
+  })
 }
 
 function normalize(s: string) {
@@ -94,6 +118,7 @@ function scoreSubstanceMatch(substanceName: string, query: string): number {
   if (!q) return 0
   if (sub === q) return 100
   if (!sub.includes(";") && sub.includes(q)) return 90
+  if (!q.includes(";") && q.includes(sub) && sub.length >= 6) return 88
   const parts = substanceName.split(";").map((p) => normalize(p.trim()))
   if (parts.some((p) => p === q)) return 85
   if (parts.some((p) => p.includes(q))) return 70
@@ -258,8 +283,32 @@ function paginateArray<T>(items: T[], page: number, limit: number) {
 }
 
 async function searchFromAnvisa(params: { q?: string; page: number; limit: number }) {
-  const data = await anvisa.listAnvisaBulas(params)
-  const deduped = dedupeAnvisaItems(data.items, params.q)
+  const q = params.q?.trim()
+  let items: anvisa.AnvisaBulaItem[] = []
+
+  if (q) {
+    const terms = expandMedicineQueryTerms(q)
+    for (const term of terms) {
+      try {
+        const byName = await anvisa.listAnvisaBulas({ q: term, page: 1, limit: 50 })
+        items.push(...byName.items)
+      } catch {
+        // nome comercial indisponível
+      }
+      try {
+        const bySubstance = await anvisa.searchAnvisaBySubstance(term, 30)
+        items.push(...bySubstance)
+      } catch {
+        // princípio ativo indisponível
+      }
+      if (items.length > 0) break
+    }
+  } else {
+    const data = await anvisa.listAnvisaBulas(params)
+    items = data.items
+  }
+
+  const deduped = dedupeAnvisaItems(items, q)
   const paged = paginateArray(deduped, params.page, params.limit)
   return {
     source: "anvisa" as const,
@@ -273,8 +322,18 @@ async function searchFromAnvisa(params: { q?: string; page: number; limit: numbe
 
 async function searchFromBulapi(params: { q?: string; page: number; limit: number }) {
   if (params.q?.trim()) {
-    const search = await bulapi.searchBulapi(params.q)
-    const deduped = dedupeBulapiSearch(search, params.q).map(mapBulapiSubstance)
+    let search = await bulapi.searchBulapi(params.q)
+    let queryForScore = params.q
+    if (!(search.products?.length || search.substances?.length)) {
+      for (const term of expandMedicineQueryTerms(params.q).filter((t) => t !== params.q)) {
+        search = await bulapi.searchBulapi(term)
+        if (search.products?.length || search.substances?.length) {
+          queryForScore = term
+          break
+        }
+      }
+    }
+    const deduped = dedupeBulapiSearch(search, queryForScore).map(mapBulapiSubstance)
     const paged = paginateArray(deduped, params.page, params.limit)
     return {
       source: "bulapi" as const,
@@ -299,6 +358,85 @@ async function searchFromBulapi(params: { q?: string; page: number; limit: numbe
   }
 }
 
+function mapAliasEntry(entry: ReturnType<typeof matchMedicineAliases>[number]): InternalMedicine {
+  return {
+    id: `alias:${entry.key}`,
+    name: entry.displayName,
+    substanceName: entry.substances[0] ?? entry.displayName,
+    manufacturerName: entry.manufacturer,
+  }
+}
+
+async function searchFromAliases(query: string): Promise<InternalMedicine[]> {
+  return matchMedicineAliases(query).map(mapAliasEntry)
+}
+
+async function searchFromCache(query: string): Promise<InternalMedicine[]> {
+  const cached = await bulaCache.searchBulaCacheByQuery(query, 20)
+  return cached.map((item) => ({
+    id: item.id,
+    name: item.name,
+    substanceName: item.substanceName,
+    manufacturerName: item.manufacturerName,
+    regulatoryCategory: item.regulatoryCategory,
+    variantCount: item.variantCount,
+  }))
+}
+
+async function searchFromConsultaRemedios(query: string): Promise<InternalMedicine[]> {
+  const aliasHints = matchMedicineAliases(query).flatMap((a) =>
+    a.crSlug ? [a.crSlug, a.displayName, ...a.commercialNames] : [a.displayName]
+  )
+  const slugs = cr.queryToCrSlugs(query, [...expandMedicineQueryTerms(query), ...aliasHints])
+  const results: InternalMedicine[] = []
+  const seen = new Set<string>()
+
+  for (const slug of slugs) {
+    if (seen.has(slug)) continue
+    seen.add(slug)
+    const probe = await cr.probeConsultaRemediosProduct(slug)
+    if (!probe) continue
+    results.push({
+      id: `cr:${probe.slug}`,
+      name: probe.productTitle ?? titleCaseSubstance(slug),
+      substanceName: probe.substanceHint,
+    })
+  }
+
+  return results
+}
+
+async function searchFromPharmadb(query: string): Promise<InternalMedicine[]> {
+  if (!pharmadb.isPharmadbConfigured()) return []
+  const items = await pharmadb.searchPharmadbProducts(query, 15)
+  return items.map((item) => ({
+    id: `pharmadb:${item.id}`,
+    name: item.produto_nome ?? "Medicamento",
+    substanceName: item.produto_nome,
+  }))
+}
+
+function mergeSearchResults(items: InternalMedicine[]): InternalMedicine[] {
+  const byKey = new Map<string, InternalMedicine>()
+  const rank = (id: string) => {
+    if (id.startsWith("cr:")) return 5
+    if (id.startsWith("pharmadb:")) return 4
+    if (id.startsWith("bulapi")) return 3
+    if (id.startsWith("anvisa")) return 2
+    if (id.startsWith("alias:")) return 1
+    return 0
+  }
+
+  for (const item of items) {
+    const key = normalize(item.name)
+    const existing = byKey.get(key)
+    if (!existing || rank(item.id) > rank(existing.id)) {
+      byKey.set(key, item)
+    }
+  }
+  return [...byKey.values()]
+}
+
 export async function searchMedicinesPaginated(params: {
   q?: string
   page?: number
@@ -317,26 +455,130 @@ export async function searchMedicinesPaginated(params: {
     totalPages: 1,
   }
 
-  if (q) {
+  if (!q) {
     try {
-      return await searchFromBulapi({ q, page, limit })
+      const res = await searchFromAnvisa({ q, page, limit })
+      logSearchAttempt({ query: "", provider: "anvisa", status: "ok", itemCount: res.total })
+      return res
     } catch {
       try {
-        return await searchFromAnvisa({ q, page, limit })
+        const res = await searchFromBulapi({ q, page, limit })
+        logSearchAttempt({ query: "", provider: "bulapi", status: "ok", itemCount: res.total })
+        return res
       } catch {
         return empty
       }
     }
   }
 
-  try {
-    return await searchFromAnvisa({ q, page, limit })
-  } catch {
+  const collected: InternalMedicine[] = []
+  let winningSource: PaginatedBulasResponse["source"] = "anvisa"
+
+  const tryProvider = async (
+    provider: PaginatedBulasResponse["source"],
+    fn: () => Promise<InternalMedicine[]>
+  ) => {
     try {
-      return await searchFromBulapi({ q, page, limit })
-    } catch {
-      return empty
+      const items = await fn()
+      logSearchAttempt({
+        query: q,
+        provider,
+        status: items.length > 0 ? "ok" : "empty",
+        itemCount: items.length,
+      })
+      if (items.length > 0) {
+        collected.push(...items)
+        if (collected.length === items.length) winningSource = provider
+      }
+      return items.length > 0
+    } catch (err) {
+      logSearchAttempt({
+        query: q,
+        provider,
+        status: "error",
+        itemCount: 0,
+        detail: err instanceof Error ? err.message : String(err),
+      })
+      return false
     }
+  }
+
+  await tryProvider("aliases", () => searchFromAliases(q))
+  await tryProvider("cache", () => searchFromCache(q))
+
+  if (collected.length === 0) {
+    try {
+      const bulapiRes = await searchFromBulapi({ q, page: 1, limit: 50 })
+      logSearchAttempt({
+        query: q,
+        provider: "bulapi",
+        status: bulapiRes.total > 0 ? "ok" : "empty",
+        itemCount: bulapiRes.total,
+      })
+      if (bulapiRes.total > 0) {
+        const paged = paginateArray(
+          bulapiRes.items.map((i) => ({ ...i } as InternalMedicine)),
+          page,
+          limit
+        )
+        return { ...bulapiRes, ...paged, items: paged.items.map(toSummary) }
+      }
+    } catch (err) {
+      logSearchAttempt({
+        query: q,
+        provider: "bulapi",
+        status: "error",
+        itemCount: 0,
+        detail: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  if (collected.length === 0) {
+    try {
+      const anvisaRes = await searchFromAnvisa({ q, page: 1, limit: 50 })
+      logSearchAttempt({
+        query: q,
+        provider: "anvisa",
+        status: anvisaRes.total > 0 ? "ok" : "empty",
+        itemCount: anvisaRes.total,
+      })
+      if (anvisaRes.total > 0) {
+        const paged = paginateArray(
+          anvisaRes.items.map((i) => ({ ...i } as InternalMedicine)),
+          page,
+          limit
+        )
+        return { ...anvisaRes, ...paged, items: paged.items.map(toSummary) }
+      }
+    } catch (err) {
+      logSearchAttempt({
+        query: q,
+        provider: "anvisa",
+        status: "error",
+        itemCount: 0,
+        detail: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  await tryProvider("consultaremedios", () => searchFromConsultaRemedios(q))
+  await tryProvider("pharmadb", () => searchFromPharmadb(q))
+
+  const merged = mergeSearchResults(collected)
+  if (merged.length === 0) {
+    logSearchAttempt({ query: q, provider: "all", status: "empty", itemCount: 0 })
+    return empty
+  }
+
+  const paged = paginateArray(merged, page, limit)
+  return {
+    source: winningSource,
+    items: paged.items.map(toSummary),
+    page: paged.page,
+    limit: paged.limit,
+    total: paged.total,
+    totalPages: paged.totalPages,
   }
 }
 
@@ -469,7 +711,7 @@ async function resolveAnvisaSubstance(id: string, key: string) {
   }
 }
 
-type BulaSource = "anvisa" | "bulapi" | "consultaremedios" | "pharmadb"
+type BulaSource = "anvisa" | "bulapi" | "consultaremedios" | "pharmadb" | "aliases"
 
 function buildPayload(params: {
   id: string
@@ -645,9 +887,118 @@ async function fetchAndBuildDetail(params: {
   return payload
 }
 
+async function buildDetailFromConsultaRemedios(params: {
+  id: string
+  slug: string
+  fallbackName: string
+  substanceName?: string
+  productSlugHints?: string[]
+}): Promise<BulaDetailPayload> {
+  const crResult = await cr.fetchConsultaRemediosBula({
+    substanceName: params.substanceName ?? params.fallbackName,
+    productSlugHints: [params.slug, ...(params.productSlugHints ?? [])],
+  })
+  if (!crResult || Object.keys(crResult.parsed).length < 2) {
+    throw new BulaFetchError("Bula não encontrada na Consulta Remédios", "NOT_FOUND")
+  }
+
+  const payload = buildPayload({
+    id: params.id,
+    nome: crResult.productTitle ?? params.fallbackName,
+    substanceName: params.substanceName ?? params.fallbackName,
+    source: "consultaremedios",
+    parsed: crResult.parsed,
+    classes: crResult.classes,
+    registroMs: crResult.registroMs,
+    informacoesLegais: crResult.informacoesLegais,
+    laboratorio: crResult.laboratorio,
+  })
+
+  await bulaCache.saveBulaToCache({
+    externalId: params.id,
+    substanceKey: substanceKey(params.substanceName ?? params.fallbackName),
+    substanceName: params.substanceName,
+    source: "consultaremedios",
+    payload,
+  })
+
+  return payload
+}
+
 export async function getBulaDetail(id: string): Promise<BulaDetailPayload> {
   const cached = await bulaCache.getBulaFromCache(id)
   if (cached) return cached
+
+  if (id.startsWith("cr:")) {
+    const slug = id.slice("cr:".length)
+    return buildDetailFromConsultaRemedios({
+      id,
+      slug,
+      fallbackName: titleCaseSubstance(slug),
+      productSlugHints: [slug],
+    })
+  }
+
+  if (id.startsWith("alias:")) {
+    const key = id.slice("alias:".length)
+    const entry = findMedicineAliasByKey(key)
+    if (!entry) throw new BulaFetchError("Medicamento não encontrado no catálogo", "NOT_FOUND")
+
+    if (entry.crSlug) {
+      return buildDetailFromConsultaRemedios({
+        id: entry.crSlug ? `cr:${entry.crSlug}` : id,
+        slug: entry.crSlug,
+        fallbackName: entry.displayName,
+        substanceName: entry.substances.join(" + "),
+        productSlugHints: [entry.displayName, ...entry.commercialNames],
+      })
+    }
+
+    return fetchAndBuildDetail({
+      id,
+      nome: entry.displayName,
+      substanceName: entry.substances.join(" + "),
+      source: "aliases",
+      manufacturerName: entry.manufacturer,
+      productSlugHints: entry.commercialNames,
+    })
+  }
+
+  if (id.startsWith("pharmadb:")) {
+    const bulaId = id.slice("pharmadb:".length)
+    const detail = await pharmadb.fetchPharmadbBulaById(bulaId)
+    if (!detail) throw new BulaFetchError("Bula não encontrada no PharmaDB", "NOT_FOUND")
+
+    const parsed: ReturnType<typeof parseBulaText> = {}
+    if (detail.texto_indicacoes) parsed.indicacao = detail.texto_indicacoes
+    if (detail.texto_contraindicacoes) parsed.contraindicacoes = detail.texto_contraindicacoes
+    if (detail.texto_posologia) parsed.posologia = detail.texto_posologia
+    if (detail.texto_reacoes_adversas) parsed.efeitosColaterais = detail.texto_reacoes_adversas
+    if (detail.texto_interacoes) parsed.interacoes = detail.texto_interacoes
+
+    const payload = buildPayload({
+      id,
+      nome: detail.produto?.nome ?? "Medicamento",
+      substanceName: detail.produto?.principios_ativos?.join(" + ") ?? detail.produto?.nome ?? "",
+      source: "pharmadb",
+      parsed,
+      classes: detail.produto?.classe_terapeutica
+        ? splitClasses(detail.produto.classe_terapeutica)
+        : undefined,
+      registroMs: detail.produto?.registro_anvisa,
+      laboratorio: detail.produto?.laboratorio,
+    })
+
+    await bulaCache.saveBulaToCache({
+      externalId: id,
+      substanceKey: substanceKey(detail.produto?.nome ?? id),
+      substanceName: detail.produto?.principios_ativos?.join(" + "),
+      source: "pharmadb",
+      payload,
+    })
+
+    return payload
+  }
 
   if (id.startsWith("bulapi-substance:")) {
     const substanceId = id.slice("bulapi-substance:".length)

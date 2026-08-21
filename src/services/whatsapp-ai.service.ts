@@ -1,12 +1,44 @@
 import prisma from "@/lib/prisma.js"
 import {
+  assertClinicFeature,
+  assertClinicLimit,
+  incrementAiUsage,
+} from "@/lib/plan-entitlements.js"
+import {
   chatCompletionWithFallback,
   isOpenRouterConfigured,
   isRetryableOpenRouterError,
   type OpenRouterMessage,
 } from "@/lib/openrouter.js"
-import { AI_TOOLS_DOC, executeAiTool, type AiToolContext } from "@/services/whatsapp-ai-tools.service.js"
+import { executeAiTool, type AiToolContext } from "@/services/whatsapp-ai-tools.service.js"
 import { buildWhatsappAiSystemPrompt } from "@/lib/whatsapp-ai-prompt.js"
+import {
+  CLINIC_TIMEZONE_LABEL,
+  clinicDayPeriod,
+  clinicDayPeriodLabel,
+  clinicGreeting,
+  clinicNowClock,
+  clinicTodayIso,
+} from "@/lib/clinic-time.js"
+import {
+  buildTimeAwareGreetingReply,
+  looksLikePureGreeting,
+} from "@/lib/whatsapp-greeting.js"
+import {
+  parseAiPermissions,
+  buildAiToolsDoc,
+  aiModeFromLegacy,
+  type AiMode,
+} from "@/lib/ai-permissions.js"
+import {
+  formatContextForPrompt,
+  handoffExpired,
+  parseAiContext,
+  stringifyAiContext,
+  stripInternalContextLeak,
+} from "@/lib/whatsapp-ai-context.js"
+import { tryDeterministicBooking } from "@/services/whatsapp-booking-orchestrator.js"
+import { tryDeterministicSatisfaction } from "@/services/whatsapp-satisfaction-orchestrator.js"
 import { sendMessageNow } from "@/services/whatsapp-messaging.service.js"
 import {
   markChatAiComposing,
@@ -112,17 +144,32 @@ function containsLeakedInternals(text: string): boolean {
       text
     ) ||
     /\bferramenta\b|sistema\s+retornou|usei\s+a\s+/i.test(text) ||
-    /API\b|JSON\b/i.test(text)
+    /API\b|JSON\b/i.test(text) ||
+    /BLOCO INTERNO|Estado operacional|fonte da ClinMax/i.test(text) ||
+    /\bpatientId\s*=/i.test(text) ||
+    /\bawaitingConfirmation\s*=/i.test(text)
   )
 }
 
 async function buildSystemPrompt(clinicId: string): Promise<string> {
-  const clinic = await prisma.clinic.findUnique({
-    where: { id: clinicId },
-    select: { name: true },
-  })
-  const today = new Date().toISOString().slice(0, 10)
-  return `${buildWhatsappAiSystemPrompt(clinic?.name ?? "ClinMax", today)}\n\n${AI_TOOLS_DOC}`
+  const [clinic, settings] = await Promise.all([
+    prisma.clinic.findUnique({
+      where: { id: clinicId },
+      select: { name: true },
+    }),
+    prisma.clinicWhatsappSettings.findUnique({ where: { clinicId } }),
+  ])
+  const today = clinicTodayIso()
+  const perms = parseAiPermissions(settings?.aiPermissionsJson)
+  const toolsDoc = buildAiToolsDoc(perms)
+  return `${buildWhatsappAiSystemPrompt(
+    clinic?.name ?? "ClinMax",
+    today,
+    clinicNowClock(),
+    CLINIC_TIMEZONE_LABEL,
+    clinicDayPeriodLabel(clinicDayPeriod()),
+    clinicGreeting()
+  )}\n\n${toolsDoc}`
 }
 
 async function loadConversationHistory(chatId: string): Promise<OpenRouterMessage[]> {
@@ -136,7 +183,9 @@ async function loadConversationHistory(chatId: string): Promise<OpenRouterMessag
     .reverse()
     .map((m) => ({
       role: m.fromMe ? ("assistant" as const) : ("user" as const),
-      content: m.fromMe ? stripToolCallsFromText(m.content) : m.content,
+      content: m.fromMe
+        ? stripInternalContextLeak(stripToolCallsFromText(m.content))
+        : m.content,
     }))
     .filter((m) => m.content.trim())
 }
@@ -190,14 +239,17 @@ export async function generateAiReply(params: {
   patientId: string | null
   inboundText: string
 }): Promise<string | null> {
-  if (!isOpenRouterConfigured()) {
-    console.warn("[WhatsApp AI] OPENROUTER_API_KEY não configurada")
+  try {
+    await assertClinicFeature(params.clinicId, "WHATSAPP_AI")
+    await assertClinicLimit(params.clinicId, "maxAiMessagesPerMonth")
+  } catch {
+    console.warn("[WhatsApp AI] plano não inclui IA ou limite atingido:", params.clinicId)
     return null
   }
 
   const chat = await prisma.whatsappChat.findUnique({
     where: { id: params.chatId },
-    select: { aiPaused: true },
+    select: { aiPaused: true, aiContextJson: true },
   })
   if (!chat || chat.aiPaused) {
     console.warn("[WhatsApp AI] IA pausada ou chat não encontrado:", params.chatId)
@@ -207,21 +259,70 @@ export async function generateAiReply(params: {
   const settings = await prisma.clinicWhatsappSettings.findUnique({
     where: { clinicId: params.clinicId },
   })
-  if (!settings?.aiAssistantEnabled || !settings.aiAutoReplyEnabled) {
+  const aiMode =
+    (settings?.aiMode as AiMode) ??
+    aiModeFromLegacy(settings?.aiAssistantEnabled ?? false, settings?.aiAutoReplyEnabled ?? false)
+
+  if (aiMode === "MANUAL") {
+    console.warn("[WhatsApp AI] modo manual, IA não responde:", params.clinicId)
+    return null
+  }
+  if (!settings?.aiAssistantEnabled && aiMode !== "SUGGEST") {
     console.warn("[WhatsApp AI] assistente desabilitado na clínica:", params.clinicId)
     return null
   }
 
-  await prisma.whatsappChat.update({
-    where: { id: params.chatId },
-    data: { aiContextJson: null },
+  const deterministic = await tryDeterministicBooking(params)
+  if (deterministic) return truncateForWhatsapp(deterministic)
+
+  const satisfaction = await tryDeterministicSatisfaction({
+    clinicId: params.clinicId,
+    chatId: params.chatId,
+    inboundText: params.inboundText,
   })
+  if (satisfaction) return truncateForWhatsapp(satisfaction)
+
+  const bookingCtxEarly = parseAiContext(
+    (
+      await prisma.whatsappChat.findUnique({
+        where: { id: params.chatId },
+        select: { aiContextJson: true },
+      })
+    )?.aiContextJson
+  )
+  const idleBooking =
+    !bookingCtxEarly.intent ||
+    bookingCtxEarly.bookingState === "IDLE" ||
+    bookingCtxEarly.bookingState === undefined
+  if (idleBooking && looksLikePureGreeting(params.inboundText)) {
+    return truncateForWhatsapp(buildTimeAwareGreetingReply(Boolean(params.patientId)))
+  }
+
+  if (!isOpenRouterConfigured()) {
+    console.warn("[WhatsApp AI] OPENROUTER_API_KEY não configurada")
+    return null
+  }
+
+  const bookingCtx = parseAiContext(
+    (
+      await prisma.whatsappChat.findUnique({
+        where: { id: params.chatId },
+        select: { aiContextJson: true },
+      })
+    )?.aiContextJson
+  )
+  const contextBlock = formatContextForPrompt(bookingCtx)
 
   const systemPrompt = await buildSystemPrompt(params.clinicId)
   const history = await loadConversationHistory(params.chatId)
 
   const messages: OpenRouterMessage[] = [
-    { role: "system", content: systemPrompt },
+    {
+      role: "system",
+      content: contextBlock
+        ? `${systemPrompt}\n\n${contextBlock}`
+        : systemPrompt,
+    },
     ...history,
   ]
 
@@ -243,7 +344,16 @@ export async function generateAiReply(params: {
       messages.push({ role: "assistant", content: rawContent })
       for (const toolCall of toolCalls) {
         console.log(`[WhatsApp AI] tool ${toolCall.tool} (chat ${params.chatId})`)
-        const result = await executeAiTool(toolCall.tool, toolCall.args, toolCtx)
+        let result: string
+        try {
+          result = await executeAiTool(toolCall.tool, toolCall.args, toolCtx)
+          await incrementAiUsage(params.clinicId, "action")
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Erro interno"
+          console.error(`[WhatsApp AI] tool ${toolCall.tool} falhou:`, err)
+          result = JSON.stringify({ sucesso: false, erro: msg })
+        }
+        console.log(`[WhatsApp AI] tool ${toolCall.tool} resultado:`, result.slice(0, 400))
         messages.push({
           role: "user",
           content: `[resultado da ferramenta ${toolCall.tool}]: ${result}`,
@@ -252,15 +362,10 @@ export async function generateAiReply(params: {
       continue
     }
 
-    const cleanReply = stripToolCallsFromText(rawContent)
+    const cleanReply = stripInternalContextLeak(stripToolCallsFromText(rawContent))
     if (cleanReply) reply = cleanReply
 
-    if (
-      !reply ||
-      looksLikeInternalReasoning(reply) ||
-      containsLeakedToolJson(reply) ||
-      containsLeakedInternals(reply)
-    ) {
+    if (!reply || looksLikeInternalReasoning(reply) || containsLeakedToolJson(reply)) {
       console.warn("[WhatsApp AI] resposta inválida, tentando novamente (chat", params.chatId, ")")
       messages.push({
         role: "user",
@@ -270,6 +375,20 @@ export async function generateAiReply(params: {
       continue
     }
 
+    if (containsLeakedInternals(reply)) {
+      const stripped = stripInternalContextLeak(reply)
+      if (stripped && !containsLeakedInternals(stripped) && !containsLeakedToolJson(stripped)) {
+        return truncateForWhatsapp(stripped)
+      }
+      messages.push({
+        role: "user",
+        content:
+          "Sua última resposta vazou texto interno. Reescreva SÓ a mensagem ao paciente, sem ids, intent, patientId ou bloco interno.",
+      })
+      continue
+    }
+
+    await incrementAiUsage(params.clinicId, "message")
     return truncateForWhatsapp(reply)
   }
 
@@ -315,11 +434,22 @@ async function processInboundQueue(chatId: string) {
 
     const chat = await prisma.whatsappChat.findUnique({
       where: { id: chatId },
-      select: { aiPaused: true },
+      select: { aiPaused: true, aiContextJson: true },
     })
-    if (!chat || chat.aiPaused) {
-      console.warn("[WhatsApp AI] conversa pausada, não responde:", chatId)
-      continue
+    if (!chat) continue
+    if (chat.aiPaused) {
+      const ctx = parseAiContext(chat.aiContextJson)
+      if (!handoffExpired(ctx)) {
+        console.warn("[WhatsApp AI] conversa em HUMAN_HANDOFF, não responde:", chatId)
+        continue
+      }
+      await prisma.whatsappChat.update({
+        where: { id: chatId },
+        data: {
+          aiPaused: false,
+          aiContextJson: stringifyAiContext({ ...ctx, mode: "BOT_ACTIVE", pausedAt: undefined }),
+        },
+      })
     }
 
     startComposingLoop({
@@ -334,7 +464,33 @@ async function processInboundQueue(chatId: string) {
       const reply = await generateAiReply(params)
       if (!reply) continue
 
+      const settings = await prisma.clinicWhatsappSettings.findUnique({
+        where: { clinicId: params.clinicId },
+      })
+      const aiMode =
+        (settings?.aiMode as AiMode) ??
+        aiModeFromLegacy(settings?.aiAssistantEnabled ?? false, settings?.aiAutoReplyEnabled ?? false)
+
       stopComposingLoop(chatId)
+
+      if (aiMode === "SUGGEST") {
+        const ctx = parseAiContext(
+          (
+            await prisma.whatsappChat.findUnique({
+              where: { id: chatId },
+              select: { aiContextJson: true },
+            })
+          )?.aiContextJson
+        )
+        await prisma.whatsappChat.update({
+          where: { id: chatId },
+          data: {
+            aiContextJson: stringifyAiContext({ ...ctx, pendingSuggestion: reply }),
+          },
+        })
+        console.log("[WhatsApp AI] sugestão salva (modo SUGGEST):", chatId)
+        continue
+      }
 
       await sendMessageNow({
         clinicId: params.clinicId,
@@ -410,11 +566,23 @@ export async function handleInboundForAi(params: {
 
   const chat = await prisma.whatsappChat.findUnique({
     where: { id: params.chatId },
-    select: { aiPaused: true },
+    select: { aiPaused: true, aiContextJson: true },
   })
   if (chat?.aiPaused) {
-    console.log("[WhatsApp AI] IA pausada nesta conversa (atendimento manual):", params.chatId)
-    return
+    const ctx = parseAiContext(chat.aiContextJson)
+    if (handoffExpired(ctx)) {
+      await prisma.whatsappChat.update({
+        where: { id: params.chatId },
+        data: {
+          aiPaused: false,
+          aiContextJson: stringifyAiContext({ ...ctx, mode: "BOT_ACTIVE", pausedAt: undefined }),
+        },
+      })
+      console.log("[WhatsApp AI] handoff expirou, IA retomou:", params.chatId)
+    } else {
+      console.log("[WhatsApp AI] HUMAN_HANDOFF ativo:", params.chatId)
+      return
+    }
   }
 
   const prev = pendingByChat.get(params.chatId)
@@ -429,8 +597,16 @@ export async function setChatAiPaused(chatId: string, clinicId: string, paused: 
     where: { id: chatId, clinicId },
   })
   if (!chat) throw new Error("NOT_FOUND")
+  const ctx = parseAiContext(chat.aiContextJson)
   return prisma.whatsappChat.update({
     where: { id: chatId },
-    data: { aiPaused: paused },
+    data: {
+      aiPaused: paused,
+      aiContextJson: stringifyAiContext({
+        ...ctx,
+        mode: paused ? "HUMAN_HANDOFF" : "BOT_ACTIVE",
+        pausedAt: paused ? new Date().toISOString() : undefined,
+      }),
+    },
   })
 }

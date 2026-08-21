@@ -1,0 +1,10 @@
+---
+description: Proíbe travessão e meia-risca em mensagens de API, e-mail e PDF
+alwaysApply: true
+---
+
+# Copy sem travessão
+
+Nunca use `—` (U+2014) nem `–` (U+2013) em mensagem de erro, e-mail, PDF, prompt ou texto de produto.
+
+Use ponto, dois-pontos, vírgula ou hífen ASCII `-` em intervalos (`08:00-18:00`).

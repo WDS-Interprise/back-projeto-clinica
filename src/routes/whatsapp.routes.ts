@@ -27,12 +27,13 @@ import {
 
 export default async function whatsappRoutes(app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
+  app.addHook("preHandler", app.requirePlanFeature("WHATSAPP"))
 
   const manage = { preHandler: [app.requirePermission("clinics:manage" as Permission)] }
   const send = { preHandler: [app.requirePermission("whatsapp:send" as Permission)] }
 
-  app.get("/connections", listConnections)
-  app.get("/connections/:id/status", getStatus)
+  app.get("/connections", send, listConnections)
+  app.get("/connections/:id/status", send, getStatus)
 
   app.post("/connections", manage, createConnection)
   app.post("/connections/:id/qr", manage, startQr)
@@ -55,7 +56,7 @@ export default async function whatsappRoutes(app: FastifyInstance) {
   app.delete("/templates/:id", manage, deleteTemplate)
   app.post("/templates/preview", send, previewTemplate)
 
-  app.get("/settings", manage, getSettings)
+  app.get("/settings", send, getSettings)
   app.put("/settings", manage, updateSettings)
 }
 

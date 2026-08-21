@@ -12,6 +12,9 @@ declare module "fastify" {
       ...perms: import("../lib/permissions.js").Permission[]
     ) => (req: any, reply: any) => Promise<void>
     requirePlatformOwner: (req: any, reply: any) => Promise<void>
+    requirePlanFeature: (
+      ...features: import("../lib/plan-features.js").PlanFeature[]
+    ) => (req: any, reply: any) => Promise<void>
   }
 }
 

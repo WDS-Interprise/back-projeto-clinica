@@ -158,7 +158,7 @@ export async function cidReport(ctx: AuthContext, params: { dateFrom?: string; d
 
   const byCid = new Map<string, { description: string; count: number }>()
   for (const r of rows) {
-    const code = r.cidCode ?? "—"
+    const code = r.cidCode ?? "-"
     const entry = byCid.get(code) ?? { description: r.cidDescription ?? "", count: 0 }
     entry.count += 1
     byCid.set(code, entry)

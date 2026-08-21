@@ -4,9 +4,10 @@ import type { AuthContext } from "@/types/index.js"
 import {
   buildContextFromAppointment,
   getDefaultReminderTemplate,
+  getDefaultRescheduleTemplate,
   renderTemplate,
 } from "./whatsapp-template.service.js"
-import { resolvePatientWhatsappDigits } from "@/whatsapp/phone.js"
+import { resolvePatientOutboundTarget } from "@/services/whatsapp-patient-phone.service.js"
 import {
   enqueueOutbox,
   processOutboxItem,
@@ -24,7 +25,7 @@ const reminderAppointmentInclude = {
 export async function sendAppointmentReminder(
   ctx: AuthContext,
   appointmentId: string,
-  options?: { templateId?: string; body?: string }
+  options?: { templateId?: string; body?: string; purpose?: "reminder" | "reschedule" }
 ) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
 
@@ -37,15 +38,19 @@ export async function sendAppointmentReminder(
   })
   if (!apt || !apt.patientId || !apt.patient) throw new Error("NOT_FOUND")
 
-  let phone: string
+  const connectionId = await resolveDefaultConnectionId(ctx.clinicId)
+  if (!connectionId) throw new Error("NO_WHATSAPP_CONNECTION")
+
+  let target: Awaited<ReturnType<typeof resolvePatientOutboundTarget>>
   try {
-    phone = resolvePatientWhatsappDigits(apt.patient)
+    target = await resolvePatientOutboundTarget({
+      clinicId: ctx.clinicId,
+      patientId: apt.patientId,
+      connectionId,
+    })
   } catch {
     throw new Error("NO_PHONE")
   }
-
-  const connectionId = await resolveDefaultConnectionId(ctx.clinicId)
-  if (!connectionId) throw new Error("NO_WHATSAPP_CONNECTION")
 
   let body = options?.body?.trim()
   if (!body) {
@@ -53,7 +58,9 @@ export async function sendAppointmentReminder(
       ? await prisma.whatsappMessageTemplate.findFirst({
           where: { id: options.templateId, clinicId: ctx.clinicId },
         })
-      : await getDefaultReminderTemplate(ctx)
+      : options?.purpose === "reschedule"
+        ? await getDefaultRescheduleTemplate(ctx)
+        : await getDefaultReminderTemplate(ctx)
     if (!tpl) throw new Error("NO_TEMPLATE")
     body = renderTemplate(tpl.body, buildContextFromAppointment(apt))
   }
@@ -61,7 +68,8 @@ export async function sendAppointmentReminder(
   await sendMessageNow({
     clinicId: ctx.clinicId,
     connectionId,
-    to: phone,
+    to: target.to,
+    remoteJid: target.remoteJid,
     body,
     patientId: apt.patientId,
     templateId: options?.templateId ?? null,
@@ -116,10 +124,14 @@ export async function runAutomaticReminders() {
     })
 
     for (const apt of appointments) {
-      if (!apt.patient) continue
-      let phone: string
+      if (!apt.patient || !apt.patientId) continue
+      let target: Awaited<ReturnType<typeof resolvePatientOutboundTarget>>
       try {
-        phone = resolvePatientWhatsappDigits(apt.patient)
+        target = await resolvePatientOutboundTarget({
+          clinicId: settings.clinicId,
+          patientId: apt.patientId,
+          connectionId,
+        })
       } catch {
         continue
       }
@@ -148,7 +160,7 @@ export async function runAutomaticReminders() {
         const outbox = await enqueueOutbox({
           clinicId: settings.clinicId,
           connectionId,
-          to: phone,
+          to: target.to,
           body,
           templateId: tpl.id,
           appointmentId: apt.id,

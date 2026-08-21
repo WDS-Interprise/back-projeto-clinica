@@ -27,24 +27,16 @@ function throwIfAny(fields: DuplicateFieldErrors) {
 async function checkEmail(
   email: string,
   fields: DuplicateFieldErrors,
-  exclude?: { userId?: string; patientId?: string }
+  exclude?: { userId?: string }
 ) {
   const normalized = email.trim().toLowerCase()
-  const [userByEmail, patientByEmail] = await Promise.all([
-    prisma.user.findFirst({
-      where: {
-        email: normalized,
-        ...(exclude?.userId ? { NOT: { id: exclude.userId } } : {}),
-      },
-    }),
-    prisma.patient.findFirst({
-      where: {
-        email: normalized,
-        ...(exclude?.patientId ? { NOT: { id: exclude.patientId } } : {}),
-      },
-    }),
-  ])
-  if (userByEmail || patientByEmail) {
+  const userByEmail = await prisma.user.findFirst({
+    where: {
+      email: normalized,
+      ...(exclude?.userId ? { NOT: { id: exclude.userId } } : {}),
+    },
+  })
+  if (userByEmail) {
     fields.email = "Este e-mail ja esta cadastrado no sistema"
   }
 }
@@ -77,22 +69,16 @@ async function checkCpf(
     return
   }
 
-  const [userByCpf, patientByCpf, doctorByCpf] = await Promise.all([
+  const [userByCpf, doctorByCpf] = await Promise.all([
     prisma.user.findFirst({
       where: {
         cpf,
         ...(exclude?.userId ? { NOT: { id: exclude.userId } } : {}),
       },
     }),
-    prisma.patient.findFirst({
-      where: {
-        cpf,
-        ...(exclude?.patientId ? { NOT: { id: exclude.patientId } } : {}),
-      },
-    }),
     prisma.doctor.findFirst({ where: { cpf } }),
   ])
-  if (userByCpf || patientByCpf || doctorByCpf) {
+  if (userByCpf || doctorByCpf) {
     fields.cpf = "Este CPF ja esta cadastrado no sistema"
   }
 }
@@ -174,13 +160,101 @@ export async function validateUserUpdate(
   throwIfAny(fields)
 }
 
+export type PatientMatch = {
+  id: string
+  name: string
+  phone: string
+  email: string | null
+  cpf: string | null
+  insurancePlan: string | null
+}
+
+export class PatientMatchError extends Error {
+  code = "PATIENT_EXISTS"
+  match: PatientMatch
+  field: "cpf" | "email" | "phone"
+  severity: "block" | "warn"
+
+  constructor(match: PatientMatch, field: "cpf" | "email" | "phone", severity: "block" | "warn" = "block") {
+    super(
+      severity === "block"
+        ? `Encontramos ${match.name}. Usar este paciente?`
+        : `Há um cadastro com o mesmo ${field === "email" ? "e-mail" : "telefone"}: ${match.name}. Pode ser coincidência.`
+    )
+    this.match = match
+    this.field = field
+    this.severity = severity
+    this.code = severity === "block" ? "PATIENT_EXISTS" : "PATIENT_POSSIBLE_DUPLICATE"
+  }
+}
+
+function toMatch(p: {
+  id: string
+  name: string
+  phone: string
+  email: string | null
+  cpf: string | null
+  insurancePlan: string | null
+}): PatientMatch {
+  return {
+    id: p.id,
+    name: p.name,
+    phone: p.phone,
+    email: p.email,
+    cpf: p.cpf,
+    insurancePlan: p.insurancePlan,
+  }
+}
+
+export async function findPatientMatch(
+  clinicId: string,
+  data: { cpf?: string | null; email?: string | null; phone?: string | null },
+  excludePatientId?: string
+): Promise<{ match: PatientMatch; field: "cpf" | "email" | "phone" } | null> {
+  const cpf = data.cpf ? normalizeCpf(data.cpf) : ""
+  const email = data.email?.trim().toLowerCase() || ""
+  const phone = (data.phone ?? "").replace(/\D/g, "")
+  const notSelf = excludePatientId ? { NOT: { id: excludePatientId } } : {}
+
+  if (cpf.length === 11) {
+    const p = await prisma.patient.findFirst({
+      where: { clinicId, cpf, ...notSelf },
+      select: { id: true, name: true, phone: true, email: true, cpf: true, insurancePlan: true },
+    })
+    if (p) return { match: toMatch(p), field: "cpf" }
+  }
+
+  if (email) {
+    const p = await prisma.patient.findFirst({
+      where: { clinicId, email, ...notSelf },
+      select: { id: true, name: true, phone: true, email: true, cpf: true, insurancePlan: true },
+    })
+    if (p) return { match: toMatch(p), field: "email" }
+  }
+
+  if (phone.length >= 10) {
+    const candidates = await prisma.patient.findMany({
+      where: { clinicId, ...notSelf },
+      select: { id: true, name: true, phone: true, email: true, cpf: true, insurancePlan: true, whatsapp: true },
+    })
+    const p = candidates.find((row) => {
+      const digits = (row.phone ?? "").replace(/\D/g, "")
+      const wa = (row.whatsapp ?? "").replace(/\D/g, "")
+      return digits === phone || wa === phone
+    })
+    if (p) return { match: toMatch(p), field: "phone" }
+  }
+
+  return null
+}
+
 export async function validatePatientCreate(
-  data: { name: string; email?: string | null; cpf: string; phone?: string },
+  data: { name: string; email?: string | null; cpf?: string | null; phone?: string; force?: boolean },
   clinicId: string
 ) {
   const fields: DuplicateFieldErrors = {}
   const name = data.name.trim()
-  let cpf = normalizeCpf(data.cpf || "")
+  const cpf = normalizeCpf(data.cpf || "")
   const phoneDigits = (data.phone ?? "").replace(/\D/g, "")
   const email =
     data.email && String(data.email).trim()
@@ -192,37 +266,45 @@ export async function validatePatientCreate(
     throwIfAny(fields)
   }
 
-  if (cpf.length !== 11) {
-    cpf = `9${Date.now().toString().slice(-10)}`
+  const cpfHit = await findPatientMatch(clinicId, {
+    cpf: cpf.length === 11 ? cpf : null,
+  })
+  if (cpfHit?.field === "cpf") {
+    throw new PatientMatchError(cpfHit.match, "cpf", "block")
   }
 
-  await checkCpf(cpf, fields)
-  await checkPatientNameInClinic(name, clinicId, fields)
-  if (email) {
-    await checkEmail(email, fields)
+  if (!data.force) {
+    const softHit = await findPatientMatch(clinicId, {
+      email,
+      phone: phoneDigits,
+    })
+    if (softHit && (softHit.field === "email" || softHit.field === "phone")) {
+      throw new PatientMatchError(softHit.match, softHit.field, "warn")
+    }
   }
 
-  throwIfAny(fields)
-  return { name, cpf, email }
+  return { name, cpf: cpf.length === 11 ? cpf : null, email }
 }
 
 export async function validatePatientUpdate(
   patientId: string,
   clinicId: string,
-  data: { name?: string; email?: string | null; cpf?: string }
+  data: { name?: string; email?: string | null; cpf?: string | null; phone?: string }
 ) {
   const fields: DuplicateFieldErrors = {}
+  const cpf = data.cpf ? normalizeCpf(data.cpf) : ""
+  const email = data.email && String(data.email).trim() ? String(data.email).trim().toLowerCase() : null
+  const phone = data.phone
 
-  if (data.cpf) {
-    await checkCpf(normalizeCpf(data.cpf), fields, { patientId })
-  }
-  if (data.name) {
-    await checkPatientNameInClinic(data.name, clinicId, fields, patientId)
-  }
-  if (data.email && String(data.email).trim()) {
-    await checkEmail(String(data.email).trim().toLowerCase(), fields, {
-      patientId,
-    })
+  const hit = await findPatientMatch(
+    clinicId,
+    {
+      cpf: cpf.length === 11 ? cpf : null,
+    },
+    patientId
+  )
+  if (hit?.field === "cpf") {
+    throw new PatientMatchError(hit.match, "cpf", "block")
   }
 
   throwIfAny(fields)

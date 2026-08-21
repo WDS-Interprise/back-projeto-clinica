@@ -5,6 +5,8 @@ import { seedCid11 } from "./seed-cid11.js"
 import { seedCidInss } from "./seed-cid-inss.js"
 
 import { generateInviteCode } from "../src/lib/invite-code.js"
+import { assignDefaultRoleToUserClinic, ensureDefaultClinicRoles } from "../src/lib/clinic-roles.js"
+import { ensurePlatformPlansAndSettings, migrateExistingClinicsToLegacy } from "../src/lib/saas-billing-seed.js"
 
 const prisma = new PrismaClient()
 
@@ -17,10 +19,10 @@ async function main() {
 
   const clinic = await prisma.clinic.upsert({
     where: { id: "clinic-default" },
-    update: { name: "ClinMax — Clínica Geral" },
+    update: { name: "ClinMax. Clínica Geral" },
     create: {
       id: "clinic-default",
-      name: "ClinMax — Clínica Geral",
+      name: "ClinMax. Clínica Geral",
       phone: "1135145000",
       email: "contato@clinmax.com.br",
       active: true,
@@ -34,6 +36,8 @@ async function main() {
       data: { inviteCode: generateInviteCode() },
     })
   }
+
+  await ensureDefaultClinicRoles(clinic.id)
 
   await prisma.patient.updateMany({
     where: { clinicId: null },
@@ -97,6 +101,10 @@ async function main() {
       },
     })
   }
+
+  await assignDefaultRoleToUserClinic(adminUser.id, clinic.id, "ADMIN")
+  await assignDefaultRoleToUserClinic(doctorUser.id, clinic.id, "DOCTOR")
+  await assignDefaultRoleToUserClinic(recepUser.id, clinic.id, "RECEPTION")
 
   const doctor = await prisma.doctor.upsert({
     where: { email: "ana.costa@clinicare.com" },
@@ -309,7 +317,7 @@ async function main() {
     {
       name: "Lembrete de consulta",
       category: "APPOINTMENT_REMINDER",
-      body: "Olá {{nome}}, lembramos seu agendamento{{procedimento}} em {{data}} às {{hora}} com {{medico}}. — {{clinica}}",
+      body: "Olá {{nome}}, lembramos seu agendamento{{procedimento}} em {{data}} às {{hora}} com {{medico}}.. {{clinica}}",
       sortOrder: 0,
     },
     {
@@ -340,6 +348,10 @@ async function main() {
   await seedCid10(prisma)
   await seedCid11(prisma)
   await seedCidInss(prisma)
+
+  await ensurePlatformPlansAndSettings()
+  const { migrated } = await migrateExistingClinicsToLegacy()
+  console.log(`  SaaS billing: ${migrated} clínica(s) migrada(s) para plano Legacy`)
 
   console.log(`  Clinic: ${clinic.name}`)
   console.log(`  Users: admin, doctor, receptionist`)

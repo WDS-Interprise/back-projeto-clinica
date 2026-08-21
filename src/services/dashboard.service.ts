@@ -1,5 +1,5 @@
 import prisma from "@/lib/prisma.js"
-import { startOfDay, endOfDay, subDays } from "date-fns"
+import { startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, subWeeks } from "date-fns"
 import { appointmentDoctorFilter } from "@/lib/auth-context.js"
 import type { AuthContext } from "@/types/index.js"
 
@@ -10,6 +10,61 @@ function clinicWhere(ctx: AuthContext) {
 function timeToMinutes(time: string): number {
   const [h, m] = time.split(":").map(Number)
   return h * 60 + (m ?? 0)
+}
+
+function pctChange(current: number, previous: number): number {
+  if (previous === 0) return current === 0 ? 0 : 100
+  return Math.round(((current - previous) / previous) * 100)
+}
+
+async function dayStatusCounts(
+  ctx: AuthContext,
+  start: Date,
+  end: Date
+) {
+  const dayFilter = {
+    clinicId: ctx.clinicId,
+    ...appointmentDoctorFilter(ctx),
+    date: { gte: start, lte: end },
+    type: "SCHEDULE" as const,
+  }
+  const [scheduled, confirmed, completed, noShow] = await Promise.all([
+    prisma.appointment.count({ where: { ...dayFilter, status: "SCHEDULED" } }),
+    prisma.appointment.count({ where: { ...dayFilter, status: "CONFIRMED" } }),
+    prisma.appointment.count({ where: { ...dayFilter, status: "COMPLETED" } }),
+    prisma.appointment.count({ where: { ...dayFilter, status: "NO_SHOW" } }),
+  ])
+  return { scheduled, confirmed, completed, noShow, dayFilter }
+}
+
+async function periodAttendance(ctx: AuthContext, start: Date, end: Date) {
+  const base = {
+    clinicId: ctx.clinicId,
+    ...appointmentDoctorFilter(ctx),
+    date: { gte: start, lte: end },
+    type: "SCHEDULE" as const,
+  }
+  const [total, confirmed, completed, noShow, inProgress] = await Promise.all([
+    prisma.appointment.count({ where: { ...base, status: { not: "CANCELLED" } } }),
+    prisma.appointment.count({ where: { ...base, status: "CONFIRMED" } }),
+    prisma.appointment.count({ where: { ...base, status: "COMPLETED" } }),
+    prisma.appointment.count({ where: { ...base, status: "NO_SHOW" } }),
+    prisma.appointment.count({ where: { ...base, status: "IN_PROGRESS" } }),
+  ])
+  const confirmedLike = confirmed + completed + inProgress
+  const confirmationRate = total === 0 ? 0 : Math.round((confirmedLike / total) * 100)
+
+  const income = await prisma.financialTransaction.aggregate({
+    where: {
+      clinicId: ctx.clinicId,
+      type: "INCOME",
+      date: { gte: start, lte: end },
+    },
+    _sum: { amount: true },
+  })
+  const revenue = Number(income._sum.amount ?? 0)
+
+  return { total, confirmationRate, noShow, revenue }
 }
 
 export async function getStats(ctx: AuthContext) {
@@ -37,29 +92,42 @@ export async function getStats(ctx: AuthContext) {
 export async function getPanelMetrics(ctx: AuthContext) {
   const todayStart = startOfDay(new Date())
   const todayEnd = endOfDay(new Date())
-  const dayFilter = {
-    clinicId: ctx.clinicId,
-    ...appointmentDoctorFilter(ctx),
-    date: { gte: todayStart, lte: todayEnd },
-    type: "SCHEDULE" as const,
-  }
+  const yesterdayStart = startOfDay(subDays(todayStart, 1))
+  const yesterdayEnd = endOfDay(subDays(todayStart, 1))
+  const weekStart = startOfWeek(todayStart, { weekStartsOn: 1 })
+  const weekEnd = endOfWeek(todayStart, { weekStartsOn: 1 })
+  const prevWeekStart = startOfWeek(subWeeks(todayStart, 1), { weekStartsOn: 1 })
+  const prevWeekEnd = endOfWeek(subWeeks(todayStart, 1), { weekStartsOn: 1 })
 
-  const [scheduled, confirmed, completed, noShow, newPatients, returningPatients] =
-    await Promise.all([
-      prisma.appointment.count({ where: { ...dayFilter, status: "SCHEDULED" } }),
-      prisma.appointment.count({ where: { ...dayFilter, status: "CONFIRMED" } }),
-      prisma.appointment.count({ where: { ...dayFilter, status: "COMPLETED" } }),
-      prisma.appointment.count({ where: { ...dayFilter, status: "NO_SHOW" } }),
-      prisma.patient.count({
-        where: { clinicId: ctx.clinicId, createdAt: { gte: todayStart, lte: todayEnd } },
-      }),
-      prisma.appointment.count({
-        where: {
-          ...dayFilter,
-          patient: { appointments: { some: { date: { lt: todayStart } } } },
-        },
-      }),
-    ])
+  const [todayCounts, yesterdayCounts, weekNow, weekPrev] = await Promise.all([
+    dayStatusCounts(ctx, todayStart, todayEnd),
+    dayStatusCounts(ctx, yesterdayStart, yesterdayEnd),
+    periodAttendance(ctx, weekStart, weekEnd),
+    periodAttendance(ctx, prevWeekStart, prevWeekEnd),
+  ])
+
+  const { scheduled, confirmed, completed, noShow, dayFilter } = todayCounts
+
+  const [newPatients, returningPatients, yNew, yReturning] = await Promise.all([
+    prisma.patient.count({
+      where: { clinicId: ctx.clinicId, createdAt: { gte: todayStart, lte: todayEnd } },
+    }),
+    prisma.appointment.count({
+      where: {
+        ...dayFilter,
+        patient: { appointments: { some: { date: { lt: todayStart } } } },
+      },
+    }),
+    prisma.patient.count({
+      where: { clinicId: ctx.clinicId, createdAt: { gte: yesterdayStart, lte: yesterdayEnd } },
+    }),
+    prisma.appointment.count({
+      where: {
+        ...yesterdayCounts.dayFilter,
+        patient: { appointments: { some: { date: { lt: yesterdayStart } } } },
+      },
+    }),
+  ])
 
   const byInsurance = await prisma.appointment.groupBy({
     by: ["insurancePlan"],
@@ -136,19 +204,42 @@ export async function getPanelMetrics(ctx: AuthContext) {
     confirmed,
     completed,
     noShow,
-    newVsReturning: { new: newPatients, returning: returningPatients },
+    vsYesterday: {
+      scheduled: pctChange(scheduled, yesterdayCounts.scheduled),
+      confirmed: pctChange(confirmed, yesterdayCounts.confirmed),
+      completed: pctChange(completed, yesterdayCounts.completed),
+      noShow: pctChange(noShow, yesterdayCounts.noShow),
+    },
+    newVsReturning: {
+      new: newPatients,
+      returning: returningPatients,
+      newChange: pctChange(newPatients, yNew),
+      returningChange: pctChange(returningPatients, yReturning),
+    },
     byInsurance: byInsurance.map((i) => ({
-      label: i.insurancePlan,
+      label: i.insurancePlan || "Particular",
       count: i._count.insurancePlan,
     })),
     procedures: procedures.map((p) => ({
-      label: procedureNames.find((n) => n.id === p.procedureId)?.name ?? "—",
+      label: procedureNames.find((n) => n.id === p.procedureId)?.name ?? "-",
       count: p._count.procedureId,
     })),
     appointmentsInPeriod: scheduled + confirmed + completed + noShow,
     avgDurationMinutes,
     birthdaysToday,
     ageDistribution,
+    periodSummary: {
+      total: weekNow.total,
+      confirmationRate: weekNow.confirmationRate,
+      noShow: weekNow.noShow,
+      revenue: weekNow.revenue,
+      vsPrevious: {
+        total: pctChange(weekNow.total, weekPrev.total),
+        confirmationRatePp: weekNow.confirmationRate - weekPrev.confirmationRate,
+        noShow: weekNow.noShow - weekPrev.noShow,
+        revenue: pctChange(weekNow.revenue, weekPrev.revenue),
+      },
+    },
   }
 }
 

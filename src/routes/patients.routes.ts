@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify"
 import { z } from "zod"
-import { list, getById, getHistory, create, update, remove } from "@/controllers/patients.controller.js"
+import { list, getById, getHistory, lookup, create, update, archive } from "@/controllers/patients.controller.js"
 
 const patientSchema = z
   .object({
@@ -24,6 +24,7 @@ const patientSchema = z
     insuranceCard: z.string().optional().or(z.literal("")),
     notes: z.string().optional().or(z.literal("")),
     active: z.boolean().optional(),
+    force: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
     const phoneDigits = (data.phone ?? "").replace(/\D/g, "")
@@ -63,10 +64,11 @@ function validate(schema: z.ZodSchema) {
 export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
 
-  app.get("/", list)
-  app.get("/:id/history", getHistory)
-  app.get("/:id", getById)
-  app.post("/", { preHandler: [validate(patientSchema)] }, create)
-  app.put("/:id", update)
-  app.delete("/:id", remove)
+  app.get("/", { preHandler: [app.requirePermission("patients:view")] }, list)
+  app.get("/lookup", { preHandler: [app.requirePermission("patients:view")] }, lookup)
+  app.get("/:id/history", { preHandler: [app.requirePermission("records:view")] }, getHistory)
+  app.get("/:id", { preHandler: [app.requirePermission("patients:view")] }, getById)
+  app.post("/", { preHandler: [app.requirePermission("patients:create"), validate(patientSchema)] }, create)
+  app.put("/:id", { preHandler: [app.requirePermission("patients:edit_basic")] }, update)
+  app.patch("/:id/archive", { preHandler: [app.requirePermission("patients:edit_basic")] }, archive)
 }

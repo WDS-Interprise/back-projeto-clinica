@@ -163,7 +163,7 @@ async function main() {
     throw new Error("Resposta sem download URL")
   }
   console.log("download url:", dl)
-  console.log("OK — fluxo completo validado")
+  console.log("OK. fluxo completo validado")
 }
 
 main().catch((err) => {

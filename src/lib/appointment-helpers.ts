@@ -63,9 +63,22 @@ export const appointmentInclude = {
       insurancePlan: true,
       birthDate: true,
       gender: true,
+      allergies: true,
+      medications: true,
     },
   },
   doctor: { select: { id: true, name: true, specialty: true, email: true } },
   procedures: { include: { procedure: true } },
   billing: true,
+  encounters: {
+    orderBy: { createdAt: "desc" as const },
+    take: 1,
+    select: {
+      id: true,
+      status: true,
+      startedAt: true,
+      endedAt: true,
+      lastSavedAt: true,
+    },
+  },
 } as const

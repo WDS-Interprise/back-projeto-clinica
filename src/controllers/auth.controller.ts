@@ -120,15 +120,7 @@ export async function completeOnboarding(req: FastifyRequest, reply: FastifyRepl
 
       payload.userId,
 
-      req.body as {
-        roleLabel: string
-        teamSize: string
-        clinicName?: string
-        inviteCode?: string
-        crm?: string
-        specialty?: string
-        phone?: string
-      }
+      req.body as authService.OnboardingPayload
 
     )
 
@@ -144,6 +136,10 @@ export async function completeOnboarding(req: FastifyRequest, reply: FastifyRepl
 
     if (error.code === "INVALID_CODE" || error.code === "CRM_REQUIRED") {
       return reply.status(400).send({ error: error.message })
+    }
+
+    if (error.code === "JOIN_PENDING") {
+      return reply.status(409).send({ error: error.message })
     }
 
     if (error.code === "ALREADY_MEMBER") {
@@ -188,6 +184,24 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
 
   }
 
+}
+
+export async function switchClinic(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const payload = req.user as { userId: string }
+    const { clinicId } = req.body as { clinicId?: string }
+    if (!clinicId?.trim()) {
+      return reply.status(400).send({ error: "Clinica obrigatoria" })
+    }
+    const result = await authService.switchClinic(payload.userId, clinicId.trim())
+    return reply.send(result)
+  } catch (error: any) {
+    if (error.code === "CLINIC_NOT_ALLOWED") {
+      return reply.status(403).send({ error: "Clinica nao permitida para este usuario" })
+    }
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro ao trocar clinica" })
+  }
 }
 
 
@@ -287,7 +301,7 @@ export async function uploadMeAvatar(req: FastifyRequest, reply: FastifyReply) {
         if (status === 500) {
           return reply.status(503).send({
             error:
-              "API de buckets respondeu erro interno (500). Provável falha no MinIO — verifique WORKSPACE_S3_* no servidor GenInfra.",
+              "API de buckets respondeu erro interno (500). Provável falha no MinIO. verifique WORKSPACE_S3_* no servidor GenInfra.",
           })
         }
 

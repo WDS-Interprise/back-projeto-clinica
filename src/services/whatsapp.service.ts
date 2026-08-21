@@ -1,4 +1,5 @@
 import prisma from "@/lib/prisma.js"
+import { assertClinicFeature, assertClinicLimit } from "@/lib/plan-entitlements.js"
 
 const whatsappDb = prisma.whatsappConnection
 if (!whatsappDb) {
@@ -146,7 +147,7 @@ export async function resumeWhatsappSessionsOnBoot() {
     if (ok) {
       console.log(`[WhatsApp] sessão retomada: ${row.name} (${row.id})`)
     } else if (row.status === WHATSAPP_STATUS.CONNECTING) {
-      console.warn(`[WhatsApp] não foi possível retomar ${row.name} — reconecte em Configurações`)
+      console.warn(`[WhatsApp] não foi possível retomar ${row.name}. reconecte em Configurações`)
     }
   }
 }
@@ -165,6 +166,8 @@ export async function createConnection(
   data: { name: string; connectionType?: "QR" | "PAIRING" }
 ) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
+  await assertClinicFeature(ctx.clinicId, "WHATSAPP")
+  await assertClinicLimit(ctx.clinicId, "maxWhatsappConnections")
   const row = await whatsappDb.create({
     data: {
       clinicId: ctx.clinicId,

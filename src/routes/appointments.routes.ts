@@ -10,7 +10,9 @@ import {
   charge,
   receipt,
   reminder,
+  aiDraft,
 } from "@/controllers/appointments.controller.js"
+import { appointmentPayGet } from "@/controllers/clinmax-pay.controller.js"
 
 const procedureLineSchema = z.object({
   procedureId: z.string(),
@@ -65,13 +67,27 @@ function validate(schema: z.ZodSchema) {
 export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
 
-  app.get("/", list)
-  app.get("/next-slot", nextSlot)
-  app.get("/:id", getById)
-  app.post("/", { preHandler: [validate(appointmentSchema)] }, create)
-  app.put("/:id", update)
-  app.delete("/:id", remove)
-  app.post("/:id/charge", charge)
-  app.post("/:id/receipt", receipt)
-  app.post("/:id/reminder", reminder)
+  app.get("/", { preHandler: app.requirePermission("agenda:view") }, list)
+  app.get("/next-slot", { preHandler: app.requirePermission("agenda:view") }, nextSlot)
+  app.get("/:id", { preHandler: app.requirePermission("agenda:view") }, getById)
+  app.post("/", { preHandler: [app.requirePermission("agenda:manage"), validate(appointmentSchema)] }, create)
+  app.put("/:id", { preHandler: app.requirePermission("agenda:manage") }, update)
+  app.delete("/:id", { preHandler: app.requirePermission("agenda:manage") }, remove)
+  app.post(
+    "/:id/charge",
+    { preHandler: app.requirePermission("finance:operational", "finance:manage") },
+    charge
+  )
+  app.post(
+    "/:id/receipt",
+    { preHandler: app.requirePermission("finance:operational", "finance:manage") },
+    receipt
+  )
+  app.post("/:id/reminder", { preHandler: app.requirePermission("whatsapp:send") }, reminder)
+  app.post("/:id/ai-draft", { preHandler: app.requirePermission("records:write") }, aiDraft)
+  app.get(
+    "/:id/pay",
+    { preHandler: app.requirePermission("finance:operational", "finance:manage") },
+    appointmentPayGet
+  )
 }

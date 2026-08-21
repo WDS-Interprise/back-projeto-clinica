@@ -27,7 +27,7 @@ export function parseBirthDateInput(raw: string): {
   return {
     iso: null,
     displayBr: null,
-    error: "Formato não reconhecido — use dd/mm/aaaa ou 8 dígitos (ddmmaaaa)",
+    error: "Formato não reconhecido. use dd/mm/aaaa ou 8 dígitos (ddmmaaaa)",
   }
 }
 
