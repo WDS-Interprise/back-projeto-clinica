@@ -45,6 +45,21 @@ export async function createCustomer(input: {
   })
 }
 
+export async function updateCustomer(
+  customerId: string,
+  input: {
+    name?: string
+    cpfCnpj?: string
+    email?: string
+    phone?: string
+  }
+) {
+  return asaasFetch<{ id: string }>(`/v3/customers/${encodeURIComponent(customerId)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  })
+}
+
 export async function createPixPayment(input: {
   customer: string
   value: number
@@ -58,6 +73,7 @@ export async function createPixPayment(input: {
     netValue?: number
     status: string
     customer: string
+    invoiceUrl?: string
   }>("/v3/payments", {
     method: "POST",
     body: JSON.stringify({
@@ -67,9 +83,68 @@ export async function createPixPayment(input: {
   })
 }
 
+export type AsaasCreditCard = {
+  holderName: string
+  number: string
+  expiryMonth: string
+  expiryYear: string
+  ccv: string
+}
+
+export type AsaasCreditCardHolder = {
+  name: string
+  email: string
+  cpfCnpj: string
+  postalCode: string
+  addressNumber: string
+  phone: string
+  mobilePhone?: string
+}
+
+export async function createCreditCardPayment(input: {
+  customer: string
+  value: number
+  dueDate: string
+  description: string
+  externalReference: string
+  remoteIp: string
+  creditCard?: AsaasCreditCard
+  creditCardHolderInfo?: AsaasCreditCardHolder
+}) {
+  return asaasFetch<{
+    id: string
+    value: number
+    netValue?: number
+    status: string
+    customer: string
+    invoiceUrl?: string
+    billingType?: string
+  }>("/v3/payments", {
+    method: "POST",
+    body: JSON.stringify({
+      customer: input.customer,
+      billingType: "CREDIT_CARD",
+      value: input.value,
+      dueDate: input.dueDate,
+      description: input.description,
+      externalReference: input.externalReference,
+      remoteIp: input.remoteIp,
+      ...(input.creditCard ? { creditCard: input.creditCard } : {}),
+      ...(input.creditCardHolderInfo ? { creditCardHolderInfo: input.creditCardHolderInfo } : {}),
+    }),
+  })
+}
+
 export async function getPixQrCode(paymentId: string) {
   return asaasFetch<{ encodedImage: string; payload: string; expirationDate: string }>(
     `/v3/payments/${encodeURIComponent(paymentId)}/pixQrCode`
+  )
+}
+
+export async function deletePayment(paymentId: string) {
+  return asaasFetch<{ deleted?: boolean; id?: string }>(
+    `/v3/payments/${encodeURIComponent(paymentId)}`,
+    { method: "DELETE" }
   )
 }
 

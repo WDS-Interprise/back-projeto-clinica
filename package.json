@@ -15,6 +15,7 @@
     "mail:invite": "node --env-file=.env --import tsx scripts/test-invite-mail.ts",
     "mail:icons": "node --import tsx scripts/build-email-icons.ts",
     "mail:hero": "node --import tsx scripts/build-email-hero.ts",
+    "test": "node --import tsx --test src/lib/plan-catalog.test.ts",
     "db:setup": "prisma db push && npm run db:seed",
     "db:studio": "prisma studio",
     "import:cid": "tsx src/scripts/import-cid.ts"

@@ -1,6 +1,7 @@
 import type { BillingCycle } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
 import * as asaas from "@/lib/asaas.client.js"
+import { AsaasApiError } from "@/lib/asaas.client.js"
 import { isAsaasConfigured } from "@/lib/env.js"
 import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
 import { onlyDigits } from "@/lib/pix-key.js"
@@ -14,19 +15,63 @@ function planPrice(plan: { monthlyPrice: unknown; annualPrice: unknown }, cycle:
   return cycle === "ANNUAL" ? moneyFromUnknown(plan.annualPrice) : moneyFromUnknown(plan.monthlyPrice)
 }
 
+export class BillingRequirementError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BillingRequirementError"
+  }
+}
+
+async function resolveClinicTaxId(clinicId: string, clinic: { cnpj: string | null }) {
+  const fromClinic = clinic.cnpj ? onlyDigits(clinic.cnpj) : ""
+  if (fromClinic.length === 11 || fromClinic.length === 14) return fromClinic
+
+  const pix = await prisma.clinicPixRecipient.findUnique({
+    where: { clinicId },
+    select: { recipientDocument: true },
+  })
+  const fromPix = pix?.recipientDocument ? onlyDigits(pix.recipientDocument) : ""
+  if (fromPix.length === 11 || fromPix.length === 14) return fromPix
+
+  const admin = await prisma.userClinic.findFirst({
+    where: { clinicId, active: true, isClinicAdmin: true, user: { cpf: { not: null } } },
+    select: { user: { select: { cpf: true } } },
+    orderBy: { createdAt: "asc" },
+  })
+  const fromAdmin = admin?.user.cpf ? onlyDigits(admin.user.cpf) : ""
+  if (fromAdmin.length === 11 || fromAdmin.length === 14) return fromAdmin
+
+  return ""
+}
+
 async function ensureClinicAsaasCustomer(clinicId: string) {
   const sub = await prisma.clinicSubscription.findUnique({
     where: { clinicId },
     include: { clinic: true },
   })
   if (!sub) throw new Error("NO_SUBSCRIPTION")
-  if (sub.asaasCustomerId) return sub.asaasCustomerId
 
-  const created = await asaas.createCustomer({
+  const taxId = await resolveClinicTaxId(clinicId, sub.clinic)
+  if (!taxId) {
+    throw new BillingRequirementError(
+      "Informe o CNPJ da clínica (ou o CPF do responsável) nas configurações para gerar o Pix da assinatura."
+    )
+  }
+
+  const payload = {
     name: sub.clinic.name,
-    cpfCnpj: sub.clinic.cnpj ? onlyDigits(sub.clinic.cnpj) : undefined,
+    cpfCnpj: taxId,
     email: sub.clinic.email || undefined,
     phone: sub.clinic.phone ? onlyDigits(sub.clinic.phone) : undefined,
+  }
+
+  if (sub.asaasCustomerId) {
+    await asaas.updateCustomer(sub.asaasCustomerId, payload)
+    return sub.asaasCustomerId
+  }
+
+  const created = await asaas.createCustomer({
+    ...payload,
     externalReference: `clinic:${clinicId}`,
   })
 
@@ -83,44 +128,105 @@ export async function cancelAsaasSubscription(asaasSubscriptionId: string) {
   await asaas.deleteSubscription(asaasSubscriptionId)
 }
 
-export async function createManualInvoice(subscriptionId: string, dueDate?: Date) {
+export async function createManualInvoice(
+  subscriptionId: string,
+  dueDate?: Date,
+  opts?: {
+    planId?: string
+    billingCycle?: BillingCycle
+    reference?: string
+    description?: string
+    paymentMethod?: "PIX" | "CREDIT_CARD"
+    remoteIp?: string
+    creditCard?: asaas.AsaasCreditCard
+    creditCardHolderInfo?: asaas.AsaasCreditCardHolder
+  }
+) {
   const sub = await prisma.clinicSubscription.findUnique({
     where: { id: subscriptionId },
     include: { plan: true },
   })
   if (!sub) throw new Error("NOT_FOUND")
-  const amount = planPrice(sub.plan, sub.billingCycle)
+  const targetPlan = opts?.planId
+    ? await prisma.plan.findUnique({ where: { id: opts.planId } })
+    : sub.plan
+  if (!targetPlan) throw new Error("PLAN_NOT_FOUND")
+  const cycle = opts?.billingCycle ?? sub.billingCycle
+  const amount = planPrice(targetPlan, cycle)
   const due = dueDate ?? addDays(new Date(), 3)
+  const description = opts?.description ?? `Mensalidade ClinMax: ${targetPlan.name}`
+  const reference = opts?.reference
+  const paymentMethod = opts?.paymentMethod ?? "PIX"
 
   if (isAsaasConfigured()) {
-    const customerId = await ensureClinicAsaasCustomer(sub.clinicId)
-    const payment = await asaas.createPixPayment({
-      customer: customerId,
-      value: amount,
-      dueDate: due.toISOString().slice(0, 10),
-      description: `Mensalidade ClinMax: ${sub.plan.name}`,
-      externalReference: `subscription-invoice:${sub.id}:${Date.now()}`,
-    })
-    let qr: { encodedImage?: string; payload?: string } = {}
     try {
-      qr = await asaas.getPixQrCode(payment.id)
-    } catch {
-      // pix pode não estar pronto imediatamente
+      const customerId = await ensureClinicAsaasCustomer(sub.clinicId)
+      if (paymentMethod === "CREDIT_CARD") {
+        const remoteIp = opts?.remoteIp || "127.0.0.1"
+        const payment = await asaas.createCreditCardPayment({
+          customer: customerId,
+          value: amount,
+          dueDate: due.toISOString().slice(0, 10),
+          description,
+          externalReference: reference ?? `subscription-invoice:${sub.id}:${Date.now()}`,
+          remoteIp,
+          creditCard: opts?.creditCard,
+          creditCardHolderInfo: opts?.creditCardHolderInfo,
+        })
+        const mapped = mapPaymentStatus(payment.status)
+        const invoice = await prisma.subscriptionInvoice.create({
+          data: {
+            clinicSubscriptionId: sub.id,
+            clinicId: sub.clinicId,
+            asaasPaymentId: payment.id,
+            amount,
+            status: mapped,
+            billingType: "CREDIT_CARD",
+            dueDate: due,
+            paidAt: mapped === "PAID" ? new Date() : null,
+            invoiceUrl: payment.invoiceUrl ?? null,
+            reference: reference ?? payment.id.slice(-8).toUpperCase(),
+          },
+        })
+        if (mapped === "PAID") {
+          await handleSubscriptionPaymentWebhook(payment.id, payment.status)
+        }
+        return invoice
+      }
+
+      const payment = await asaas.createPixPayment({
+        customer: customerId,
+        value: amount,
+        dueDate: due.toISOString().slice(0, 10),
+        description,
+        externalReference: reference ?? `subscription-invoice:${sub.id}:${Date.now()}`,
+      })
+      let qr: { encodedImage?: string; payload?: string } = {}
+      try {
+        qr = await asaas.getPixQrCode(payment.id)
+      } catch {
+        // pix pode não estar pronto imediatamente
+      }
+      return prisma.subscriptionInvoice.create({
+        data: {
+          clinicSubscriptionId: sub.id,
+          clinicId: sub.clinicId,
+          asaasPaymentId: payment.id,
+          amount,
+          status: "PENDING",
+          billingType: "PIX",
+          dueDate: due,
+          pixQrCode: qr.encodedImage ?? null,
+          pixCopyPaste: qr.payload ?? null,
+          invoiceUrl: payment.invoiceUrl ?? null,
+          reference: reference ?? payment.id.slice(-8).toUpperCase(),
+        },
+      })
+    } catch (err) {
+      if (err instanceof BillingRequirementError) throw err
+      if (err instanceof AsaasApiError) throw new BillingRequirementError(err.message)
+      throw err
     }
-    return prisma.subscriptionInvoice.create({
-      data: {
-        clinicSubscriptionId: sub.id,
-        clinicId: sub.clinicId,
-        asaasPaymentId: payment.id,
-        amount,
-        status: "PENDING",
-        billingType: "PIX",
-        dueDate: due,
-        pixQrCode: qr.encodedImage ?? null,
-        pixCopyPaste: qr.payload ?? null,
-        reference: payment.id.slice(-8).toUpperCase(),
-      },
-    })
   }
 
   return prisma.subscriptionInvoice.create({
@@ -131,9 +237,58 @@ export async function createManualInvoice(subscriptionId: string, dueDate?: Date
       status: "PENDING",
       billingType: "MANUAL",
       dueDate: due,
-      reference: `MAN-${Date.now().toString(36).toUpperCase()}`,
+      reference: reference ?? `MAN-${Date.now().toString(36).toUpperCase()}`,
     },
   })
+}
+
+export async function cancelPendingUpgradeInvoices(clinicSubscriptionId: string) {
+  const invoices = await prisma.subscriptionInvoice.findMany({
+    where: {
+      clinicSubscriptionId,
+      status: { in: ["PENDING", "OVERDUE"] },
+      reference: { startsWith: "upgrade:" },
+    },
+  })
+  for (const inv of invoices) {
+    if (inv.asaasPaymentId && isAsaasConfigured()) {
+      await asaas.deletePayment(inv.asaasPaymentId).catch(() => undefined)
+    }
+  }
+  if (invoices.length) {
+    await prisma.subscriptionInvoice.updateMany({
+      where: { id: { in: invoices.map((inv) => inv.id) } },
+      data: { status: "CANCELLED" },
+    })
+  }
+  return invoices.length
+}
+
+export function parseUpgradeReference(reference: string | null | undefined) {
+  if (!reference?.startsWith("upgrade:")) return null
+  const parts = reference.split(":")
+  if (parts.length < 3) return null
+  const planId = parts[1]
+  const billingCycle = parts[2] === "ANNUAL" ? "ANNUAL" : "MONTHLY"
+  return { planId, billingCycle: billingCycle as BillingCycle }
+}
+
+export async function ensurePendingPaymentForSubscription(subscriptionId: string) {
+  const pending = await prisma.subscriptionInvoice.findFirst({
+    where: { clinicSubscriptionId: subscriptionId, status: { in: ["PENDING", "OVERDUE"] } },
+    orderBy: { dueDate: "desc" },
+  })
+  if (pending) {
+    if (pending.asaasPaymentId && isAsaasConfigured() && !pending.pixQrCode) {
+      try {
+        return await refreshInvoicePix(pending.id, pending.clinicId)
+      } catch {
+        return pending
+      }
+    }
+    return pending
+  }
+  return createManualInvoice(subscriptionId, new Date())
 }
 
 function mapPaymentStatus(status: string): "PENDING" | "PAID" | "OVERDUE" | "CANCELLED" | "FAILED" | "REFUNDED" {
@@ -238,23 +393,31 @@ export async function handleSubscriptionPaymentWebhook(
 
   const sub = invoice.subscription
   const now = new Date()
-  const nextEnd = sub.billingCycle === "ANNUAL" ? addYears(now, 1) : addMonths(now, 1)
 
   if (mapped === "PAID") {
+    const upgrade = parseUpgradeReference(invoice.reference)
+    const periodCycle = upgrade?.billingCycle ?? sub.billingCycle
+    const nextEnd = periodCycle === "ANNUAL" ? addYears(now, 1) : addMonths(now, 1)
     await prisma.clinicSubscription.update({
       where: { id: sub.id },
       data: {
         status: "ACTIVE",
+        ...(upgrade
+          ? { planId: upgrade.planId, billingCycle: upgrade.billingCycle }
+          : {}),
         currentPeriodStart: now,
         currentPeriodEnd: nextEnd,
         cancelAtPeriodEnd: false,
       },
     })
   } else if (mapped === "OVERDUE") {
-    await prisma.clinicSubscription.update({
-      where: { id: sub.id },
-      data: { status: "PAST_DUE" },
-    })
+    const upgrade = parseUpgradeReference(invoice.reference)
+    if (!upgrade) {
+      await prisma.clinicSubscription.update({
+        where: { id: sub.id },
+        data: { status: "PAST_DUE" },
+      })
+    }
   }
 
   return { handled: true, invoiceId: invoice.id, status: mapped }

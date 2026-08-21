@@ -9,6 +9,12 @@ import {
 } from "@/lib/plan-features.js"
 import { moneyFromUnknown } from "@/lib/money.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
+import {
+  annualEquivalentMonthly,
+  COMPARISON_ROWS,
+  formatComparisonValue,
+  getCommercialPlan,
+} from "@/lib/plan-catalog.js"
 
 function presentPlan(row: {
   id: string
@@ -63,6 +69,63 @@ export async function listPublicPlans() {
     orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
   })
   return rows.map((r) => presentPlan({ ...r, _count: { subscriptions: 0 } }))
+}
+
+export function presentPublicCatalogPlan(row: {
+  name: string
+  slug: string
+  description: string | null
+  monthlyPrice: unknown
+  annualPrice: unknown
+  trialDays: number
+  highlighted: boolean
+  displayOrder: number
+  featuresJson: string
+  limitsJson: string
+}) {
+  const marketing = getCommercialPlan(row.slug)
+  const features = parsePlanFeatures(row.featuresJson)
+  const limits = parsePlanLimits(row.limitsJson)
+  const monthlyPrice = moneyFromUnknown(row.monthlyPrice)
+  const annualPrice = moneyFromUnknown(row.annualPrice)
+  return {
+    slug: row.slug,
+    name: row.name,
+    description: row.description,
+    monthlyPrice,
+    annualPrice,
+    annualEquivalentMonthly: annualEquivalentMonthly(annualPrice),
+    trialDays: row.trialDays,
+    highlighted: row.highlighted,
+    displayOrder: row.displayOrder,
+    badge: marketing?.badge ?? (row.highlighted ? "Mais escolhido" : null),
+    ctaLabel: marketing?.ctaLabel ?? "Assinar",
+    marketingFeatures: marketing?.marketingFeatures ?? features.map((f) => f),
+    limits,
+    comparison: COMPARISON_ROWS.map((rowDef) => {
+      const cell = formatComparisonValue({
+        kind: rowDef.kind,
+        feature: rowDef.feature,
+        limitKey: rowDef.limitKey,
+        features,
+        limits,
+      })
+      return { key: rowDef.key, label: rowDef.label, ...cell }
+    }),
+  }
+}
+
+export async function listPublicCatalog() {
+  const rows = await prisma.plan.findMany({
+    where: { active: true, public: true },
+    orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+  })
+  return {
+    currency: "BRL",
+    annualSavingsLabel: "Economize 2 meses",
+    plans: rows.map(presentPublicCatalogPlan),
+    comparisonRows: COMPARISON_ROWS.map((r) => ({ key: r.key, label: r.label })),
+  }
 }
 
 export async function getPlanById(id: string) {

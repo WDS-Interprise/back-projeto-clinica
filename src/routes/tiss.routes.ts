@@ -6,7 +6,6 @@ export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
   app.addHook("preHandler", app.requirePermission("finance:view" as Permission))
   app.addHook("preHandler", app.requirePlanFeature("TISS"))
-  app.addHook("preHandler", app.requirePlanFeature("TISS"))
 
   app.get("/guides", listGuides)
   app.post("/guides", { preHandler: app.requirePermission("finance:manage" as Permission) }, createGuide)

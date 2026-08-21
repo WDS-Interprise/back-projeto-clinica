@@ -36,6 +36,7 @@ import webhooksRoutes from "@/routes/webhooks.routes.js"
 import clinicRoleRoutes from "@/routes/clinic-role.routes.js"
 import backofficeSaasRoutes from "@/routes/backoffice-saas.routes.js"
 import subscriptionRoutes from "@/routes/subscription.routes.js"
+import publicPlansRoutes from "@/routes/public-plans.routes.js"
 import encounterRoutes from "@/routes/encounters.routes.js"
 import { type PlanFeature } from "@/lib/plan-features.js"
 import { clinicHasFeature } from "@/lib/plan-entitlements.js"
@@ -160,6 +161,7 @@ await app.register(tissRoutes, { prefix: "/api/tiss" })
 await app.register(satisfactionRoutes, { prefix: "/api/satisfaction" })
 await app.register(clinicRoleRoutes, { prefix: "/api/clinic-roles" })
 await app.register(webhooksRoutes, { prefix: "/api/webhooks" })
+await app.register(publicPlansRoutes, { prefix: "/api/public" })
 await app.register(publicPrescriptionRoutes, { prefix: "/api/public" })
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(async () => {

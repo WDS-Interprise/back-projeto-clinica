@@ -2,7 +2,7 @@ import type { BillingCycle, SubscriptionStatus } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
 import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
-import { parsePlanFeatures, parsePlanLimits } from "@/lib/plan-features.js"
+import { parsePlanFeatures, parsePlanLimits, LEGACY_PLAN_SLUG } from "@/lib/plan-features.js"
 import { computeTrialEnd, getClinicUsageSummary } from "@/lib/plan-entitlements.js"
 import * as billing from "@/services/subscription-billing.service.js"
 
@@ -70,6 +70,13 @@ function presentSubscription(row: {
     asaasSubscriptionId: row.asaasSubscriptionId,
     nextBillingAt: row.currentPeriodEnd?.toISOString() ?? row.trialEndsAt?.toISOString() ?? null,
     lastPaymentAt: lastPaid?.paidAt?.toISOString() ?? null,
+    pendingUpgrade: null as null | {
+      planId: string
+      planName: string
+      billingCycle: BillingCycle
+      amount: number
+      invoiceId: string
+    },
     features: parsePlanFeatures(row.plan.featuresJson),
     limits: parsePlanLimits(row.plan.limitsJson),
     createdAt: row.createdAt.toISOString(),
@@ -117,14 +124,77 @@ export async function getSubscriptionByClinicId(clinicId: string) {
       invoices: { orderBy: { dueDate: "desc" }, take: 12 },
     },
   })
-  return row ? presentSubscription(row) : null
+  if (!row) return null
+
+  if (row.status === "PAST_DUE") {
+    const paid = await prisma.subscriptionInvoice.findFirst({
+      where: { clinicSubscriptionId: row.id, status: "PAID" },
+      select: { id: true },
+    })
+    if (!paid) {
+      const repaired = await prisma.clinicSubscription.update({
+        where: { id: row.id },
+        data: { status: "ACTIVE" },
+        include: {
+          plan: true,
+          clinic: { select: { id: true, name: true, active: true, createdAt: true } },
+          invoices: { orderBy: { dueDate: "desc" }, take: 12 },
+        },
+      })
+      return attachPendingUpgrade(presentSubscription(repaired), repaired.invoices)
+    }
+  }
+
+  return attachPendingUpgrade(presentSubscription(row), row.invoices)
+}
+
+async function attachPendingUpgrade(
+  view: ReturnType<typeof presentSubscription>,
+  invoices: Array<{ id: string; amount: unknown; status: string; reference?: string | null }>
+) {
+  const pending = invoices.find(
+    (inv) => (inv.status === "PENDING" || inv.status === "OVERDUE") && inv.reference?.startsWith("upgrade:")
+  )
+  if (!pending) return view
+  const parsed = billing.parseUpgradeReference(pending.reference)
+  if (!parsed) return view
+  const plan = await prisma.plan.findUnique({ where: { id: parsed.planId } })
+  return {
+    ...view,
+    pendingUpgrade: {
+      planId: parsed.planId,
+      planName: plan?.name ?? "plano superior",
+      billingCycle: parsed.billingCycle,
+      amount: moneyFromUnknown(pending.amount),
+      invoiceId: pending.id,
+    },
+  }
 }
 
 export async function changePlan(
   subscriptionId: string,
   planId: string,
   actorUserId?: string,
-  opts?: { billingCycle?: BillingCycle }
+  opts?: {
+    billingCycle?: BillingCycle
+    paymentMethod?: "PIX" | "CREDIT_CARD"
+    remoteIp?: string
+    creditCard?: {
+      holderName: string
+      number: string
+      expiryMonth: string
+      expiryYear: string
+      ccv: string
+    }
+    creditCardHolderInfo?: {
+      name: string
+      email: string
+      cpfCnpj: string
+      postalCode: string
+      addressNumber: string
+      phone: string
+    }
+  }
 ) {
   const sub = await prisma.clinicSubscription.findUnique({
     where: { id: subscriptionId },
@@ -135,9 +205,58 @@ export async function changePlan(
   if (!plan || !plan.active) throw new Error("PLAN_NOT_AVAILABLE")
 
   const billingCycle = opts?.billingCycle ?? sub.billingCycle
+  const currentPrice =
+    sub.billingCycle === "ANNUAL"
+      ? moneyFromUnknown(sub.plan.annualPrice)
+      : moneyFromUnknown(sub.plan.monthlyPrice)
+  const nextPrice =
+    billingCycle === "ANNUAL" ? moneyFromUnknown(plan.annualPrice) : moneyFromUnknown(plan.monthlyPrice)
+  const isUpgrade = nextPrice > currentPrice && plan.slug !== LEGACY_PLAN_SLUG
+
+  if (isUpgrade) {
+    await billing.cancelPendingUpgradeInvoices(sub.id)
+
+    const restored =
+      sub.status === "PAST_DUE" || sub.status === "SUSPENDED" ? "ACTIVE" : sub.status
+
+    const updated = await prisma.clinicSubscription.update({
+      where: { id: subscriptionId },
+      data: { status: restored },
+      include: { plan: true, clinic: true, invoices: { orderBy: { dueDate: "desc" }, take: 12 } },
+    })
+
+    await billing.createManualInvoice(updated.id, new Date(), {
+      planId: plan.id,
+      billingCycle,
+      reference: `upgrade:${plan.id}:${billingCycle}`,
+      description: `Upgrade ClinMax: ${sub.plan.name} para ${plan.name}`,
+      paymentMethod: opts?.paymentMethod ?? "PIX",
+      remoteIp: opts?.remoteIp,
+      creditCard: opts?.creditCard,
+      creditCardHolderInfo: opts?.creditCardHolderInfo,
+    })
+
+    await writeAuditLog({
+      clinicId: sub.clinicId,
+      userId: actorUserId,
+      module: "saas-billing",
+      action: "subscription-upgrade-requested",
+      description: `Upgrade solicitado de ${sub.plan.name} para ${plan.name}. Plano atual permanece até o pagamento.`,
+      entityType: "ClinicSubscription",
+      entityId: sub.id,
+      metadata: { fromPlanId: sub.planId, toPlanId: planId, billingCycle },
+    })
+
+    return getSubscriptionByClinicId(sub.clinicId)
+  }
+
   const updated = await prisma.clinicSubscription.update({
     where: { id: subscriptionId },
-    data: { planId, billingCycle },
+    data: {
+      planId,
+      billingCycle,
+      ...(sub.status === "PAST_DUE" ? { status: "ACTIVE" as const } : {}),
+    },
     include: { plan: true, clinic: true, invoices: { orderBy: { dueDate: "desc" }, take: 3 } },
   })
 
@@ -276,12 +395,35 @@ export async function suspendSubscription(subscriptionId: string, actorUserId?: 
   return presentSubscription(updated)
 }
 
-export async function requestPlanChangeByClinic(clinicId: string, planId: string, billingCycle: BillingCycle) {
+export async function cancelPendingUpgradeByClinic(clinicId: string, actorUserId?: string) {
+  const sub = await prisma.clinicSubscription.findUnique({ where: { clinicId } })
+  if (!sub) throw new Error("NOT_FOUND")
+  const count = await billing.cancelPendingUpgradeInvoices(sub.id)
+  if (count) {
+    await writeAuditLog({
+      clinicId,
+      userId: actorUserId,
+      module: "saas-billing",
+      action: "subscription-upgrade-cancelled",
+      description: "Cobrança de upgrade cancelada. O plano atual permanece ativo.",
+      entityType: "ClinicSubscription",
+      entityId: sub.id,
+    })
+  }
+  return getSubscriptionByClinicId(clinicId)
+}
+
+export async function requestPlanChangeByClinic(
+  clinicId: string,
+  planId: string,
+  billingCycle: BillingCycle,
+  extra?: Omit<NonNullable<Parameters<typeof changePlan>[3]>, "billingCycle">
+) {
   return changePlan(
     (await prisma.clinicSubscription.findUniqueOrThrow({ where: { clinicId } })).id,
     planId,
     undefined,
-    { billingCycle }
+    { billingCycle, ...extra }
   )
 }
 

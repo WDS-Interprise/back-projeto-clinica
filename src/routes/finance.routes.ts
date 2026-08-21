@@ -15,7 +15,10 @@ import {
   createAccount,
   createCategory,
   createCostCenter,
+  updateCostCenter,
+  removeCostCenter,
   createPaymentMethod,
+  removePaymentMethod,
   analysis,
 } from "@/controllers/finance.controller.js"
 import {
@@ -49,8 +52,11 @@ export default async function (app: FastifyInstance) {
   app.post("/categories", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, createCategory)
   app.get("/cost-centers", { preHandler: [app.requirePermission(view), ...financeFeature.preHandler] }, listCostCenters)
   app.post("/cost-centers", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, createCostCenter)
+  app.patch("/cost-centers/:id", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, updateCostCenter)
+  app.delete("/cost-centers/:id", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, removeCostCenter)
   app.get("/payment-methods", { preHandler: [app.requirePermission(view), ...financeFeature.preHandler] }, listPaymentMethods)
   app.post("/payment-methods", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, createPaymentMethod)
+  app.delete("/payment-methods/:id", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, removePaymentMethod)
 
   app.get("/settings", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, financeSettingsGet)
   app.put("/settings", { preHandler: [app.requirePermission(config), ...financeFeature.preHandler] }, financeSettingsPut)

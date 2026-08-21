@@ -52,6 +52,19 @@ export async function updateRole(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+export async function resetRole(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromRequest(req)
+    const { id } = req.params as { id: string }
+    const role = await clinicRoleService.resetClinicRole(ctx, id)
+    return reply.send(role)
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Erro"
+    const status = msg === "NOT_FOUND" ? 404 : 400
+    return reply.status(status).send({ error: msg === "NOT_FOUND" ? "Cargo não encontrado" : msg })
+  }
+}
+
 export async function removeRole(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromRequest(req)

@@ -295,6 +295,7 @@ export type OnboardingPayload = {
   crm?: string
   phone?: string
   pendingInvites?: Array<{ email: string; role: SystemRole; name?: string; profession?: string }>
+  planSlug?: string
 }
 
 function resolveOnboardingRole(data: OnboardingPayload): { role: SystemRole; treats: boolean; isOwner: boolean } {
@@ -475,7 +476,7 @@ export async function completeOnboarding(userId: string, data: OnboardingPayload
   })
 
   const { ensureClinicSubscription } = await import("@/lib/saas-billing-seed.js")
-  await ensureClinicSubscription(clinicId)
+  await ensureClinicSubscription(clinicId, { planSlug: data.planSlug })
 
   if (data.pendingInvites?.length) {
     const { createEmailInvite } = await import("@/services/invite.service.js")
