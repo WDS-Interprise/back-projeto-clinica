@@ -4,11 +4,20 @@ import type { AuthContext } from "@/types/index.js"
 
 const MONTHS_PT = ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
 
+export type PatientHistoryAddendum = {
+  id: string
+  body: string
+  reason?: string | null
+  createdAt: string
+  authorName: string
+}
+
 export type PatientHistoryRecord =
   | {
       id: string
       type: "ATTENDANCE"
-      appointmentId: string
+      appointmentId: string | null
+      encounterId: string | null
       status: string
       professionalName: string
       time: string
@@ -26,12 +35,14 @@ export type PatientHistoryRecord =
         prescriptionSummary?: string | null
         notes?: string | null
       }
+      addendums?: PatientHistoryAddendum[]
     }
   | {
       id: string
       type: "PRESCRIPTION"
       prescriptionId: string
       appointmentId?: string | null
+      encounterId?: string | null
       status: string
       professionalName: string
       time: string
@@ -67,35 +78,62 @@ function parseTimeToMinutes(time: string): number {
   return (h ?? 0) * 60 + (m ?? 0)
 }
 
-function computeDurationMinutes(apt: {
+function computeDurationMinutes(input: {
   startedAt: Date | null
   endedAt: Date | null
-  startTime: string
-  endTime: string
+  startTime?: string
+  endTime?: string
 }): number | null {
-  if (apt.startedAt && apt.endedAt) {
-    const mins = Math.round((apt.endedAt.getTime() - apt.startedAt.getTime()) / 60000)
+  if (input.startedAt && input.endedAt) {
+    const mins = Math.round((input.endedAt.getTime() - input.startedAt.getTime()) / 60000)
     return mins > 0 ? mins : null
   }
-  const start = parseTimeToMinutes(apt.startTime)
-  const end = parseTimeToMinutes(apt.endTime)
-  if (end > start) return end - start
+  if (input.startTime && input.endTime) {
+    const start = parseTimeToMinutes(input.startTime)
+    const end = parseTimeToMinutes(input.endTime)
+    if (end > start) return end - start
+  }
   return null
 }
 
-function formatDiagnosticHypothesis(apt: {
+function formatDiagnosticHypothesis(row: {
   cidCode: string | null
   cidDescription: string | null
 }): string | null {
-  if (apt.cidCode && apt.cidDescription) return `${apt.cidCode} - ${apt.cidDescription}`
-  if (apt.cidDescription) return apt.cidDescription
-  if (apt.cidCode) return apt.cidCode
+  if (row.cidCode && row.cidDescription) return `${row.cidCode} - ${row.cidDescription}`
+  if (row.cidDescription) return row.cidDescription
+  if (row.cidCode) return row.cidCode
   return null
 }
 
 function recordSortKey(record: PatientHistoryRecord): number {
   const [h, m] = record.time.split(":").map(Number)
   return (h ?? 0) * 60 + (m ?? 0)
+}
+
+function hasClinicalContent(row: {
+  mainComplaint: string | null
+  physicalExam: string | null
+  currentIllnessHistory: string | null
+  historyAndAntecedents: string | null
+  conduct: string | null
+  prescriptionSummary: string | null
+  cidCode: string | null
+  notes: string | null
+  status: string
+}) {
+  return (
+    Boolean(row.mainComplaint?.trim()) ||
+    Boolean(row.physicalExam?.trim()) ||
+    Boolean(row.currentIllnessHistory?.trim()) ||
+    Boolean(row.historyAndAntecedents?.trim()) ||
+    Boolean(row.conduct?.trim()) ||
+    Boolean(row.prescriptionSummary?.trim()) ||
+    Boolean(row.cidCode) ||
+    Boolean(row.notes?.trim()) ||
+    row.status === "COMPLETED" ||
+    row.status === "IN_PROGRESS"
+  )
 }
 
 export async function getPatientHistory(ctx: AuthContext, patientId: string) {
@@ -105,7 +143,7 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
   })
   if (!patient) return null
 
-  const [appointments, prescriptions] = await Promise.all([
+  const [appointments, encounters, prescriptions] = await Promise.all([
     prisma.appointment.findMany({
       where: {
         patientId,
@@ -116,6 +154,23 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
         doctor: { select: { id: true, name: true } },
       },
       orderBy: [{ date: "desc" }, { startTime: "desc" }],
+      take: 100,
+    }),
+    prisma.encounter.findMany({
+      where: {
+        patientId,
+        clinicId: ctx.clinicId,
+        ...(ctx.role === "DOCTOR" && ctx.doctorId ? { doctorId: ctx.doctorId } : {}),
+      },
+      include: {
+        doctor: { select: { id: true, name: true } },
+        appointment: { select: { id: true, date: true, startTime: true, endTime: true, status: true } },
+        addendums: {
+          orderBy: { createdAt: "asc" },
+          include: { author: { select: { id: true, name: true } } },
+        },
+      },
+      orderBy: [{ startedAt: "desc" }, { createdAt: "desc" }],
       take: 100,
     }),
     prisma.prescription.findMany({
@@ -133,10 +188,22 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
     }),
   ])
 
+  const encounterByAppointment = new Map<string, (typeof encounters)[number]>()
+  for (const enc of encounters) {
+    if (enc.appointmentId && !encounterByAppointment.has(enc.appointmentId)) {
+      encounterByAppointment.set(enc.appointmentId, enc)
+    }
+  }
+
   const prescriptionsByAppointment = new Map<string, typeof prescriptions>()
+  const prescriptionsByEncounter = new Map<string, typeof prescriptions>()
   const standalonePrescriptions: typeof prescriptions = []
   for (const rx of prescriptions) {
-    if (rx.appointmentId) {
+    if (rx.encounterId) {
+      const list = prescriptionsByEncounter.get(rx.encounterId) ?? []
+      list.push(rx)
+      prescriptionsByEncounter.set(rx.encounterId, list)
+    } else if (rx.appointmentId) {
       const list = prescriptionsByAppointment.get(rx.appointmentId) ?? []
       list.push(rx)
       prescriptionsByAppointment.set(rx.appointmentId, list)
@@ -146,6 +213,7 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
   }
 
   const recordsByDate = new Map<string, PatientHistoryRecord[]>()
+  const seenEncounterIds = new Set<string>()
 
   const pushRecord = (dateKey: string, record: PatientHistoryRecord) => {
     const list = recordsByDate.get(dateKey) ?? []
@@ -153,89 +221,19 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
     recordsByDate.set(dateKey, list)
   }
 
-  for (const apt of appointments) {
-    const dateKey = apt.date.toISOString().slice(0, 10)
-    const professionalName = apt.doctor?.name ?? "Profissional"
-    const durationMinutes = computeDurationMinutes(apt)
-    const locked = apt.status === "COMPLETED"
-
-    const hasClinicalContent =
-      Boolean(apt.mainComplaint?.trim()) ||
-      Boolean(apt.physicalExam?.trim()) ||
-      Boolean(apt.currentIllnessHistory?.trim()) ||
-      Boolean(apt.historyAndAntecedents?.trim()) ||
-      Boolean(apt.conduct?.trim()) ||
-      Boolean(apt.prescriptionSummary?.trim()) ||
-      Boolean(apt.cidCode) ||
-      Boolean(apt.notes?.trim()) ||
-      apt.status === "COMPLETED" ||
-      apt.status === "IN_PROGRESS"
-
-    if (hasClinicalContent || apt.status !== "CANCELLED") {
-      pushRecord(dateKey, {
-        id: `att-${apt.id}`,
-        type: "ATTENDANCE",
-        appointmentId: apt.id,
-        status: apt.status,
-        professionalName,
-        time: apt.startTime,
-        durationMinutes,
-        locked,
-        attendance: {
-          mainComplaint: apt.mainComplaint,
-          physicalExam: apt.physicalExam,
-          currentIllnessHistory: apt.currentIllnessHistory,
-          historyAndAntecedents: apt.historyAndAntecedents,
-          diagnosticHypothesis: formatDiagnosticHypothesis(apt),
-          cidCode: apt.cidCode,
-          cidDescription: apt.cidDescription,
-          conduct: apt.conduct,
-          prescriptionSummary: apt.prescriptionSummary,
-          notes: apt.notes,
-        },
-      })
-    }
-
-    const linked = prescriptionsByAppointment.get(apt.id) ?? []
-    for (const rx of linked) {
-      pushRecord(dateKey, {
-        id: `rx-${rx.id}`,
-        type: "PRESCRIPTION",
-        prescriptionId: rx.id,
-        appointmentId: rx.appointmentId,
-        status: rx.status,
-        professionalName: rx.professional?.name ?? professionalName,
-        time: rx.updatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-        prescriptionNumber: 0,
-        prescription: {
-          receiptType: rx.receiptType,
-          notes: rx.notes,
-          validationCode: rx.validationCode,
-          items: rx.items.map((item) => ({
-            id: item.id,
-            type: item.type,
-            name: item.name,
-            presentation: item.presentation,
-            dosage: item.dosage,
-            frequency: item.frequency,
-            quantity: item.quantity,
-            instructions: item.instructions,
-            continuousUse: item.continuousUse,
-          })),
-        },
-      })
-    }
-  }
-
-  for (const rx of standalonePrescriptions) {
-    const dateKey = rx.prescriptionDate.toISOString().slice(0, 10)
+  const pushRx = (
+    dateKey: string,
+    rx: (typeof prescriptions)[number],
+    professionalFallback: string
+  ) => {
     pushRecord(dateKey, {
       id: `rx-${rx.id}`,
       type: "PRESCRIPTION",
       prescriptionId: rx.id,
-      appointmentId: null,
+      appointmentId: rx.appointmentId,
+      encounterId: rx.encounterId,
       status: rx.status,
-      professionalName: rx.professional?.name ?? "Profissional",
+      professionalName: rx.professional?.name ?? professionalFallback,
       time: rx.updatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       prescriptionNumber: 0,
       prescription: {
@@ -255,6 +253,155 @@ export async function getPatientHistory(ctx: AuthContext, patientId: string) {
         })),
       },
     })
+  }
+
+  for (const apt of appointments) {
+    const dateKey = apt.date.toISOString().slice(0, 10)
+    const professionalName = apt.doctor?.name ?? "Profissional"
+    const enc = encounterByAppointment.get(apt.id)
+
+    if (enc) {
+      seenEncounterIds.add(enc.id)
+      const locked = enc.status === "COMPLETED"
+      const source = {
+        mainComplaint: enc.mainComplaint,
+        physicalExam: enc.physicalExam,
+        currentIllnessHistory: enc.currentIllnessHistory,
+        historyAndAntecedents: enc.historyAndAntecedents,
+        conduct: enc.conduct,
+        prescriptionSummary: enc.prescriptionSummary,
+        cidCode: enc.cidCode,
+        cidDescription: enc.cidDescription,
+        notes: enc.notes,
+        status: enc.status,
+      }
+      if (hasClinicalContent(source) || apt.status !== "CANCELLED") {
+        pushRecord(dateKey, {
+          id: `att-${enc.id}`,
+          type: "ATTENDANCE",
+          appointmentId: apt.id,
+          encounterId: enc.id,
+          status: enc.status === "COMPLETED" ? "COMPLETED" : apt.status,
+          professionalName: enc.doctor?.name ?? professionalName,
+          time: apt.startTime,
+          durationMinutes: computeDurationMinutes({
+            startedAt: enc.startedAt,
+            endedAt: enc.endedAt,
+            startTime: apt.startTime,
+            endTime: apt.endTime,
+          }),
+          locked,
+          attendance: {
+            mainComplaint: enc.mainComplaint,
+            physicalExam: enc.physicalExam,
+            currentIllnessHistory: enc.currentIllnessHistory,
+            historyAndAntecedents: enc.historyAndAntecedents,
+            diagnosticHypothesis: formatDiagnosticHypothesis(enc),
+            cidCode: enc.cidCode,
+            cidDescription: enc.cidDescription,
+            conduct: enc.conduct,
+            prescriptionSummary: enc.prescriptionSummary,
+            notes: enc.notes,
+          },
+          addendums: enc.addendums.map((a) => ({
+            id: a.id,
+            body: a.body,
+            reason: a.reason,
+            createdAt: a.createdAt.toISOString(),
+            authorName: a.author?.name ?? "Profissional",
+          })),
+        })
+      }
+
+      for (const rx of prescriptionsByEncounter.get(enc.id) ?? []) {
+        pushRx(dateKey, rx, professionalName)
+      }
+    } else {
+      const locked = apt.status === "COMPLETED"
+      if (hasClinicalContent(apt) || apt.status !== "CANCELLED") {
+        pushRecord(dateKey, {
+          id: `att-${apt.id}`,
+          type: "ATTENDANCE",
+          appointmentId: apt.id,
+          encounterId: null,
+          status: apt.status,
+          professionalName,
+          time: apt.startTime,
+          durationMinutes: computeDurationMinutes(apt),
+          locked,
+          attendance: {
+            mainComplaint: apt.mainComplaint,
+            physicalExam: apt.physicalExam,
+            currentIllnessHistory: apt.currentIllnessHistory,
+            historyAndAntecedents: apt.historyAndAntecedents,
+            diagnosticHypothesis: formatDiagnosticHypothesis(apt),
+            cidCode: apt.cidCode,
+            cidDescription: apt.cidDescription,
+            conduct: apt.conduct,
+            prescriptionSummary: apt.prescriptionSummary,
+            notes: apt.notes,
+          },
+          addendums: [],
+        })
+      }
+    }
+
+    for (const rx of prescriptionsByAppointment.get(apt.id) ?? []) {
+      if (rx.encounterId && seenEncounterIds.has(rx.encounterId)) continue
+      pushRx(dateKey, rx, professionalName)
+    }
+  }
+
+  for (const enc of encounters) {
+    if (seenEncounterIds.has(enc.id)) continue
+    const dateKey = (enc.startedAt ?? enc.createdAt).toISOString().slice(0, 10)
+    const professionalName = enc.doctor?.name ?? "Profissional"
+    pushRecord(dateKey, {
+      id: `att-${enc.id}`,
+      type: "ATTENDANCE",
+      appointmentId: enc.appointmentId,
+      encounterId: enc.id,
+      status: enc.status,
+      professionalName,
+      time: enc.appointment?.startTime ??
+        (enc.startedAt
+          ? enc.startedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+          : "00:00"),
+      durationMinutes: computeDurationMinutes({
+        startedAt: enc.startedAt,
+        endedAt: enc.endedAt,
+        startTime: enc.appointment?.startTime,
+        endTime: enc.appointment?.endTime,
+      }),
+      locked: enc.status === "COMPLETED",
+      attendance: {
+        mainComplaint: enc.mainComplaint,
+        physicalExam: enc.physicalExam,
+        currentIllnessHistory: enc.currentIllnessHistory,
+        historyAndAntecedents: enc.historyAndAntecedents,
+        diagnosticHypothesis: formatDiagnosticHypothesis(enc),
+        cidCode: enc.cidCode,
+        cidDescription: enc.cidDescription,
+        conduct: enc.conduct,
+        prescriptionSummary: enc.prescriptionSummary,
+        notes: enc.notes,
+      },
+      addendums: enc.addendums.map((a) => ({
+        id: a.id,
+        body: a.body,
+        reason: a.reason,
+        createdAt: a.createdAt.toISOString(),
+        authorName: a.author?.name ?? "Profissional",
+      })),
+    })
+    for (const rx of prescriptionsByEncounter.get(enc.id) ?? []) {
+      pushRx(dateKey, rx, professionalName)
+    }
+  }
+
+  for (const rx of standalonePrescriptions) {
+    const dateKey = rx.prescriptionDate.toISOString().slice(0, 10)
+    pushRx(dateKey, rx, "Profissional")
   }
 
   const days: PatientHistoryDayGroup[] = [...recordsByDate.entries()]

@@ -3,6 +3,7 @@ import crypto from "crypto"
 import jwt from "jsonwebtoken"
 import prisma from "@/lib/prisma.js"
 import { getPermissionsForRole, getRedirectPath } from "@/lib/permissions.js"
+import { assignDefaultRoleToUserClinic, resolveUserPermissions } from "@/lib/clinic-roles.js"
 import { validateRegisterData } from "@/lib/duplicate-validation.js"
 import type { JwtPayload } from "@/types/index.js"
 import { JWT_EXPIRES, JWT_SECRET } from "@/lib/env.js"
@@ -56,7 +57,13 @@ async function buildAuthSession(user: AuthUserRow) {
 
   const clinics = await loadUserClinics(user.id)
   if (clinics.length === 0) {
-    const permissions = getPermissionsForRole(user.role)
+    const pending = await prisma.clinicJoinRequest.findFirst({
+      where: { userId: user.id, status: "PENDING" },
+      include: { clinic: { select: { name: true } } },
+    })
+    const permissions = getPermissionsForRole(user.role, {
+      hasClinicalProfile: Boolean(user.doctorProfile?.id),
+    })
     const token = generateToken({
       userId: user.id,
       email: user.email,
@@ -77,14 +84,21 @@ async function buildAuthSession(user: AuthUserRow) {
       clinicId: null,
       clinics: [],
       permissions,
-      redirectPath: "/dashboard",
-      needsOnboarding: true,
+      redirectPath: pending ? "/aguardando-acesso" : "/dashboard",
+      needsOnboarding: !pending,
       provisionedByClinic: false,
+      pendingApproval: Boolean(pending),
+      pendingClinicName: pending?.clinic.name,
     }
   }
 
   const clinicId = clinics[0].id
-  const permissions = getPermissionsForRole(user.role)
+  const permissions = await resolveUserPermissions(
+    user.id,
+    clinicId,
+    user.role,
+    Boolean(user.doctorProfile?.id)
+  )
   const provisionedByClinic = await isProvisionedByClinic(user.id, clinicId)
   const redirectPath = getRedirectPath(user.role, provisionedByClinic)
 
@@ -242,53 +256,152 @@ export async function register(data: {
   }
 }
 
-const ROLE_LABEL_MAP: Record<string, "ADMIN" | "DOCTOR" | "RECEPTION"> = {
+type SystemRole = "ADMIN" | "DOCTOR" | "RECEPTION" | "CONSULTANT" | "FINANCE"
+
+const ROLE_LABEL_MAP: Record<string, SystemRole> = {
   Médico: "DOCTOR",
   Recepcionista: "RECEPTION",
   "Administrador(a) da clínica": "ADMIN",
-  "Consultor(a) de TI/Negócios": "ADMIN",
+  "Consultor(a) de TI/Negócios": "CONSULTANT",
   "Outro profissional de saúde": "DOCTOR",
+  "Proprietário / Administrador": "ADMIN",
+  Administrador: "ADMIN",
+  "Profissional de saúde": "DOCTOR",
+  "Administrador e profissional de saúde": "ADMIN",
+  "Consultor / Implantação": "CONSULTANT",
+  Consultor: "CONSULTANT",
+  Financeiro: "FINANCE",
   Paciente: "ADMIN",
 }
 
-export async function completeOnboarding(
-  userId: string,
-  data: {
-    roleLabel: string
-    teamSize: string
-    clinicName?: string
-    inviteCode?: string
-    crm?: string
-    specialty?: string
-    phone?: string
-  }
+export type OnboardingPayload = {
+  path?: "create" | "join"
+  roleLabel: string
+  alsoTreats?: boolean
+  profession?: string
+  councilNumber?: string
+  councilUf?: string
+  specialty?: string
+  teamSize?: string
+  clinicName?: string
+  spaceType?: string
+  billingModel?: string
+  careMode?: string
+  operatingDays?: string
+  agendaStartTime?: string
+  agendaEndTime?: string
+  slotIntervalMinutes?: number
+  inviteCode?: string
+  crm?: string
+  phone?: string
+  pendingInvites?: Array<{ email: string; role: SystemRole; name?: string; profession?: string }>
+}
+
+function resolveOnboardingRole(data: OnboardingPayload): { role: SystemRole; treats: boolean; isOwner: boolean } {
+  const label = data.roleLabel
+  const role = ROLE_LABEL_MAP[label] ?? "ADMIN"
+  const ownerClinical = label === "Administrador e profissional de saúde"
+  const treats =
+    data.alsoTreats === true ||
+    ownerClinical ||
+    role === "DOCTOR"
+  const isOwner =
+    label === "Proprietário / Administrador" ||
+    ownerClinical ||
+    (role === "ADMIN" && data.path !== "join")
+  return { role: treats && !isOwner && !ownerClinical && role === "ADMIN" ? "DOCTOR" : role, treats, isOwner }
+}
+
+async function upsertClinicalProfile(
+  tx: any,
+  user: { id: string; name: string; email: string; phone: string | null; cpf: string | null },
+  data: OnboardingPayload
 ) {
+  const crm =
+    [data.councilUf, data.councilNumber?.trim() || data.crm?.trim(), data.profession]
+      .filter(Boolean)
+      .join("-") || `REG${Date.now().toString().slice(-6)}`
+  const specialty = data.specialty?.trim() || "Geral"
+  const professionalType = data.profession?.trim() || "Profissional de saúde"
+  const existingDoctor = await tx.doctor.findUnique({ where: { userId: user.id } })
+  const payload = {
+    name: user.name,
+    email: user.email,
+    phone: data.phone?.trim() || user.phone || "11999999999",
+    cpf: user.cpf,
+    crm,
+    specialty,
+    professionalType,
+    hasOwnAgenda: true,
+    available: true,
+  }
+  if (existingDoctor) {
+    await tx.doctor.update({ where: { id: existingDoctor.id }, data: payload })
+    return
+  }
+  await tx.doctor.create({ data: { userId: user.id, ...payload } })
+}
+
+export async function completeOnboarding(userId: string, data: OnboardingPayload) {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) throw new Error("NOT_FOUND")
 
+  const { role, treats, isOwner } = resolveOnboardingRole(data)
   const existingLink = await prisma.userClinic.findFirst({
     where: { userId, active: true },
   })
-  if (existingLink) {
-    const mappedRole = ROLE_LABEL_MAP[data.roleLabel] ?? undefined
-    const clinicNameTrim = data.clinicName?.trim()
 
+  if (data.inviteCode?.trim() && !existingLink) {
+    const { joinByInviteCode } = await import("@/services/invite.service.js")
+    return joinByInviteCode(userId, data.inviteCode, {
+      roleLabel: data.roleLabel,
+      crm: data.councilNumber || data.crm,
+      specialty: data.specialty,
+      phone: data.phone,
+      cpf: user.cpf ?? undefined,
+      profession: data.profession,
+    })
+  }
+
+  const clinicNameTrim = data.clinicName?.trim()
+  const clinicPrefs = {
+    name: clinicNameTrim,
+    spaceType: data.spaceType,
+    teamSizeLabel: data.teamSize,
+    billingModel: data.billingModel,
+    careMode: data.careMode,
+    operatingDays: data.operatingDays,
+    agendaStartTime: data.agendaStartTime,
+    agendaEndTime: data.agendaEndTime,
+    slotIntervalMinutes: data.slotIntervalMinutes,
+  }
+
+  if (existingLink) {
     await prisma.$transaction(async (tx) => {
-      if (mappedRole) {
-        await tx.user.update({
-          where: { id: userId },
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          role,
+          isAccountAdmin: isOwner || role === "ADMIN",
+        },
+      })
+      if (existingLink.isClinicAdmin) {
+        await tx.clinic.update({
+          where: { id: existingLink.clinicId },
           data: {
-            role: mappedRole,
-            isAccountAdmin: mappedRole === "ADMIN",
+            ...(clinicNameTrim ? { name: clinicNameTrim } : {}),
+            spaceType: clinicPrefs.spaceType,
+            teamSizeLabel: clinicPrefs.teamSizeLabel,
+            billingModel: clinicPrefs.billingModel,
+            careMode: clinicPrefs.careMode,
+            operatingDays: clinicPrefs.operatingDays,
+            agendaStartTime: clinicPrefs.agendaStartTime,
+            agendaEndTime: clinicPrefs.agendaEndTime,
+            slotIntervalMinutes: clinicPrefs.slotIntervalMinutes,
           },
         })
       }
-      if (clinicNameTrim && existingLink.isClinicAdmin) {
-        await tx.clinic.update({
-          where: { id: existingLink.clinicId },
-          data: { name: clinicNameTrim },
-        })
-      }
+      if (treats) await upsertClinicalProfile(tx, user, data)
     })
 
     const me = await getMe(userId, existingLink.clinicId)
@@ -320,32 +433,31 @@ export async function completeOnboarding(
     }
   }
 
-  if (data.inviteCode?.trim()) {
-    const { joinByInviteCode } = await import("@/services/invite.service.js")
-    return joinByInviteCode(userId, data.inviteCode, {
-      roleLabel: data.roleLabel,
-      crm: data.crm,
-      specialty: data.specialty,
-      phone: data.phone,
-      cpf: user.cpf ?? undefined,
-    })
-  }
+  const clinicTitle = clinicNameTrim || `Clínica ${user.name.split(" ")[0] || "Nova"}`
+  const { generateInviteCode } = await import("@/lib/invite-code.js")
 
-  const mappedRole = ROLE_LABEL_MAP[data.roleLabel] ?? "ADMIN"
-  const clinicTitle =
-    data.clinicName?.trim() ||
-    `Clínica ${user.name.split(" ")[0] || "Nova"}`
-
-  const result = await prisma.$transaction(async (tx) => {
+  const clinicId = await prisma.$transaction(async (tx) => {
     const clinic = await tx.clinic.create({
-      data: { name: clinicTitle, active: true, inviteCode: (await import("@/lib/invite-code.js")).generateInviteCode() },
+      data: {
+        name: clinicTitle,
+        active: true,
+        inviteCode: generateInviteCode(),
+        spaceType: clinicPrefs.spaceType,
+        teamSizeLabel: clinicPrefs.teamSizeLabel,
+        billingModel: clinicPrefs.billingModel,
+        careMode: clinicPrefs.careMode,
+        operatingDays: clinicPrefs.operatingDays,
+        agendaStartTime: clinicPrefs.agendaStartTime ?? "08:00",
+        agendaEndTime: clinicPrefs.agendaEndTime ?? "18:00",
+        slotIntervalMinutes: clinicPrefs.slotIntervalMinutes ?? 30,
+      },
     })
 
     await tx.user.update({
       where: { id: userId },
       data: {
-        role: mappedRole,
-        isAccountAdmin: mappedRole === "ADMIN",
+        role,
+        isAccountAdmin: isOwner || role === "ADMIN",
       },
     })
 
@@ -353,42 +465,39 @@ export async function completeOnboarding(
       data: {
         userId,
         clinicId: clinic.id,
-        isClinicAdmin: mappedRole === "ADMIN",
+        isClinicAdmin: role === "ADMIN",
         active: true,
       },
     })
 
-    if (mappedRole === "DOCTOR") {
-      const existingDoctor = await tx.doctor.findUnique({ where: { userId } })
-      if (!existingDoctor) {
-        const suffix = Date.now().toString().slice(-6)
-        await tx.doctor.create({
-          data: {
-            userId,
-            name: user.name,
-            email: user.email,
-            phone: user.phone || "11999999999",
-            crm: `CRM${suffix}`,
-            specialty: "Clínico Geral",
-            professionalType: "Médico",
-            hasOwnAgenda: true,
-            available: true,
-          },
-        })
-      }
-    }
-
+    if (treats) await upsertClinicalProfile(tx, user, data)
     return clinic.id
   })
 
-  const me = await getMe(userId, result)
+  const { ensureClinicSubscription } = await import("@/lib/saas-billing-seed.js")
+  await ensureClinicSubscription(clinicId)
+
+  if (data.pendingInvites?.length) {
+    const { createEmailInvite } = await import("@/services/invite.service.js")
+    for (const invite of data.pendingInvites) {
+      const email = invite.email?.trim().toLowerCase()
+      if (!email) continue
+      try {
+        await createEmailInvite(clinicId, userId, { email, role: invite.role })
+      } catch {
+        // convite individual não deve abortar a clínica recém-criada
+      }
+    }
+  }
+
+  const me = await getMe(userId, clinicId)
   if (!me) throw new Error("NOT_FOUND")
-  const permissions = getPermissionsForRole(me.role)
+  const permissions = getPermissionsForRole(me.role, { hasClinicalProfile: Boolean(me.doctorId) })
   const token = generateToken({
     userId: user.id,
     email: user.email,
     role: me.role,
-    clinicId: result,
+    clinicId,
   })
 
   return {
@@ -401,14 +510,13 @@ export async function completeOnboarding(
       isAccountAdmin: me.isAccountAdmin,
       doctorId: me.doctorId,
     },
-    clinicId: result,
+    clinicId,
     clinicName: me.clinicName,
     clinics: me.clinics,
     permissions,
-    redirectPath: "/dashboard",
+    redirectPath: role === "RECEPTION" ? "/agenda" : "/dashboard",
     needsOnboarding: false,
     provisionedByClinic: false,
-    onboardingMeta: { roleLabel: data.roleLabel, teamSize: data.teamSize },
   }
 }
 
@@ -442,8 +550,27 @@ export async function getMe(userId: string, clinicIdFromJwt?: string) {
 
   const clinic = clinics.find((c) => c.id === clinicId)
   const hasClinic = clinics.length > 0
+  const latestJoin = !hasClinic
+    ? await prisma.clinicJoinRequest.findFirst({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        include: { clinic: { select: { name: true } } },
+      })
+    : null
+  const pending = latestJoin?.status === "PENDING" ? latestJoin : null
+  const rejected = latestJoin?.status === "REJECTED" ? latestJoin : null
   const provisionedByClinic =
     hasClinic && clinicId ? await isProvisionedByClinic(user.id, clinicId) : false
+
+  const token =
+    hasClinic && clinicId && (!clinicIdFromJwt || clinicIdFromJwt === "none")
+      ? generateToken({
+          userId: user.id,
+          email: user.email,
+          role: user.role,
+          clinicId,
+        })
+      : undefined
 
   return {
     id: user.id,
@@ -460,16 +587,61 @@ export async function getMe(userId: string, clinicIdFromJwt?: string) {
     clinicId,
     clinicName: clinic?.name,
     clinics,
-    permissions: getPermissionsForRole(user.role),
+    permissions: clinicId
+      ? await resolveUserPermissions(
+          user.id,
+          clinicId,
+          user.role,
+          Boolean(user.doctorProfile?.id)
+        )
+      : getPermissionsForRole(user.role, {
+          hasClinicalProfile: Boolean(user.doctorProfile?.id),
+        }),
     linkedDoctorIds:
       user.role === "RECEPTION"
         ? user.linkedDoctors.map((l) => l.doctorId)
         : undefined,
     redirectPath: hasClinic
       ? getRedirectPath(user.role, provisionedByClinic)
-      : "/onboarding",
-    needsOnboarding: !hasClinic,
+      : pending
+        ? "/aguardando-acesso"
+        : rejected
+          ? "/aguardando-acesso"
+          : "/onboarding",
+    needsOnboarding: !hasClinic && !pending && !rejected,
+    pendingApproval: Boolean(pending),
+    pendingClinicName: pending?.clinic.name ?? rejected?.clinic.name,
+    joinRequestStatus: hasClinic ? "APPROVED" : latestJoin?.status ?? null,
+    token,
     provisionedByClinic,
+  }
+}
+
+export async function switchClinic(userId: string, targetClinicId: string) {
+  const clinics = await loadUserClinics(userId)
+  if (!clinics.some((c) => c.id === targetClinicId)) {
+    throw Object.assign(new Error("CLINIC_NOT_ALLOWED"), { code: "CLINIC_NOT_ALLOWED" })
+  }
+
+  const me = await getMe(userId, targetClinicId)
+  if (!me?.clinicId) {
+    throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+  }
+
+  const token = generateToken({
+    userId: me.id,
+    email: me.email,
+    role: me.role,
+    clinicId: me.clinicId,
+  })
+
+  return {
+    token,
+    clinicId: me.clinicId,
+    clinicName: me.clinicName,
+    clinics: me.clinics,
+    permissions: me.permissions,
+    linkedDoctorIds: me.linkedDoctorIds,
   }
 }
 

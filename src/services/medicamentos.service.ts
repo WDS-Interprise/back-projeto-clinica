@@ -1,5 +1,7 @@
 import * as bulapi from "@/lib/bulapi.client.js"
+import { expandMedicineQueryTerms } from "@/lib/medicine-aliases.js"
 import { formatRegulatoryCategory } from "@/lib/regulatory-labels.js"
+import * as bulasService from "@/services/bulas.service.js"
 import type {
   MedicamentoProduto,
   MedicamentoSearchResponse,
@@ -103,6 +105,84 @@ function countProductsBySubstance(products: bulapi.BulapiProduct[]) {
   return counts
 }
 
+function mapCatalogSearch(
+  query: string,
+  bulaSearch: Awaited<ReturnType<typeof bulasService.searchMedicinesPaginated>>
+): MedicamentoSearchResponse {
+  const products: MedicamentoProduto[] = bulaSearch.items.map((item, index) => ({
+    id: item.id,
+    name: item.name,
+    activeIngredient: item.substanceName,
+    presentation: item.regulatoryCategory,
+    laboratory: item.manufacturerName,
+    productType: item.regulatoryCategory,
+    price: null,
+    currency: "BRL",
+    highlighted: index < 3,
+  }))
+  const substances: MedicamentoSubstancia[] = bulaSearch.items
+    .filter((item) => item.substanceName)
+    .map((item) => ({
+      id: item.id,
+      name: item.substanceName!,
+      productCount: item.variantCount,
+    }))
+
+  return {
+    query,
+    products,
+    substances,
+    totalProducts: products.length,
+    totalSubstances: substances.length,
+    source: "catalog",
+  }
+}
+
+async function searchViaCatalog(query: string): Promise<MedicamentoSearchResponse | null> {
+  for (const term of expandMedicineQueryTerms(query)) {
+    const bulaSearch = await bulasService.searchMedicinesPaginated({
+      q: term,
+      page: 1,
+      limit: MAX_RESULTS,
+    })
+    if (bulaSearch.items.length > 0) return mapCatalogSearch(query, bulaSearch)
+  }
+  return null
+}
+
+function mapBulapiSearch(
+  query: string,
+  search: Awaited<ReturnType<typeof bulapi.searchBulapi>>
+): MedicamentoSearchResponse {
+  const products = (search.products ?? []).slice(0, MAX_RESULTS)
+  const substanceCounts = countProductsBySubstance(search.products ?? [])
+
+  const substanceMap = new Map<number, MedicamentoSubstancia>()
+  for (const s of search.substances ?? []) {
+    substanceMap.set(s.id, mapSubstance(s, substanceCounts.get(s.id) ?? 0))
+  }
+  for (const p of products) {
+    if (!p.substance || substanceMap.has(p.substance.id)) continue
+    substanceMap.set(
+      p.substance.id,
+      mapSubstance(p.substance, substanceCounts.get(p.substance.id) ?? 1)
+    )
+  }
+
+  const substances = [...substanceMap.values()]
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+    .slice(0, MAX_RESULTS)
+
+  return {
+    query,
+    products: products.map((p, i) => mapProduct(p, i, query)),
+    substances,
+    totalProducts: products.length,
+    totalSubstances: substances.length,
+    source: "bulapi",
+  }
+}
+
 export async function searchMedicamentos(q: string): Promise<MedicamentoSearchResponse> {
   const query = q.trim()
   if (query.length < MIN_QUERY_LEN) {
@@ -123,48 +203,35 @@ export async function searchMedicamentos(q: string): Promise<MedicamentoSearchRe
   }
 
   try {
-    const search = await bulapi.searchBulapi(query)
-    const products = (search.products ?? []).slice(0, MAX_RESULTS)
-    const substanceCounts = countProductsBySubstance(search.products ?? [])
+    for (const term of expandMedicineQueryTerms(query)) {
+      const search = await bulapi.searchBulapi(term)
+      const hasHits = (search.products?.length ?? 0) > 0 || (search.substances?.length ?? 0) > 0
+      if (!hasHits) continue
 
-    const substanceMap = new Map<number, MedicamentoSubstancia>()
-    for (const s of search.substances ?? []) {
-      substanceMap.set(
-        s.id,
-        mapSubstance(s, substanceCounts.get(s.id) ?? 0)
-      )
+      const result = mapBulapiSearch(query, search)
+      await enrichProductsWithPrices(result.products)
+      searchCache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data: result })
+      return result
     }
-    for (const p of products) {
-      if (!p.substance || substanceMap.has(p.substance.id)) continue
-      substanceMap.set(
-        p.substance.id,
-        mapSubstance(p.substance, substanceCounts.get(p.substance.id) ?? 1)
-      )
-    }
-
-    const substances = [...substanceMap.values()]
-      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
-      .slice(0, MAX_RESULTS)
-
-    const mappedProducts = products.map((p, i) => mapProduct(p, i, query))
-    await enrichProductsWithPrices(mappedProducts)
-
-    const result: MedicamentoSearchResponse = {
-      query,
-      products: mappedProducts,
-      substances,
-      totalProducts: products.length,
-      totalSubstances: substances.length,
-      source: "bulapi",
-    }
-
-    searchCache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data: result })
-    return result
   } catch {
-    const fallback = buildFallback(query)
-    searchCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, data: fallback })
-    return fallback
+    // Bulapi indisponível: tenta catálogo abaixo
   }
+
+  try {
+    const catalog = await searchViaCatalog(query)
+    if (catalog) {
+      searchCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, data: catalog })
+      return catalog
+    }
+  } catch {
+    // cascata bulas indisponível
+  }
+
+  const fallback = buildFallback(query)
+  if (fallback.totalProducts > 0) {
+    searchCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, data: fallback })
+  }
+  return fallback
 }
 
 function buildFallback(query: string): MedicamentoSearchResponse {
@@ -183,7 +250,7 @@ function buildFallback(query: string): MedicamentoSearchResponse {
   const products: MedicamentoProduto[] = [
     {
       id: "fallback-1",
-      name: "Dipirona 1 g comprimido — 10 un",
+      name: "Dipirona 1 g comprimido. 10 un",
       activeIngredient: "Dipirona 1 g",
       pharmaceuticalForm: "Comprimido",
       packageQuantity: "10 un",
@@ -195,7 +262,7 @@ function buildFallback(query: string): MedicamentoSearchResponse {
     },
     {
       id: "fallback-2",
-      name: "Novalgina Flash 1 g + 130 mg comprimido — 8 un",
+      name: "Novalgina Flash 1 g + 130 mg comprimido. 8 un",
       activeIngredient: "Dipirona 1 g + Cafeína 130 mg",
       pharmaceuticalForm: "Comprimido",
       packageQuantity: "8 un",

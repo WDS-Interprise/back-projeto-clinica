@@ -14,15 +14,23 @@ TUSS_TIMEOUT_MS=10000
 ANVISA_BASE_URL="https://consultas.anvisa.gov.br"
 ANVISA_TIMEOUT_MS=15000
 BULA_CACHE_TTL_DAYS=7
+# BULA_SEARCH_DEBUG=1
 CONSULTAREMEDIOS_BASE_URL="https://consultaremedios.com.br"
 CONSULTAREMEDIOS_TIMEOUT_MS=20000
 PHARMADB_API_KEY=""
 PHARMADB_BASE_URL="https://api.pharmadb.com.br"
 PHARMADB_TIMEOUT_MS=15000
 
-OPENROUTER_API_KEY=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
-OPENROUTER_MODEL=nvidia/nemotron-nano-9b-v2:free
-OPENROUTER_MODEL_FALLBACKS=openai/gpt-oss-20b:free,qwen/qwen3-4b:free,z-ai/glm-4.5-air:free
+NINEROUTER_URL=http://localhost:20128
+NINEROUTER_KEY=
+# NineRouter: manter 1 modelo por provedor (barato). Ordem = quando Gemini acabar.
+# Manter no NineRouter: gemini-3.5-flash-lite, gpt-5.4-mini, nemotron-3-ultra, glm-4.7-flash
+NINEROUTER_MODEL=gemini/gemini-3.5-flash-lite
+NINEROUTER_MODEL_FALLBACKS=openai/gpt-5.4-mini,nvidia/nvidia/nemotron-3-ultra-550b-a55b,ollama/glm-4.7-flash
+
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=gemini/gemini-3.5-flash-lite
+OPENROUTER_MODEL_FALLBACKS=openai/gpt-5.4-mini,nvidia/nvidia/nemotron-3-ultra-550b-a55b,ollama/glm-4.7-flash
 
 # --- GenInfra bucket "clinica-imagem" (HTTP API — não usar S3 direto) ---
 # Integração: POST upload-url → PUT na URL assinada → GET list → GET download-url
@@ -45,3 +53,7 @@ FRONTEND_URL=http://localhost:5173
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
 # GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/google/callback
+
+# Fuso da clínica (padrão: Horário de Brasília)
+# CLINIC_TIMEZONE=America/Sao_Paulo
+# CLINIC_TIMEZONE_LABEL=Horário de Brasília

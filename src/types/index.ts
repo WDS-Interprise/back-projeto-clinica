@@ -13,4 +13,6 @@ export interface AuthContext {
   clinicId: string
   doctorId?: string
   linkedDoctorIds?: string[]
+  permissions: string[]
+  hasClinicalProfile: boolean
 }

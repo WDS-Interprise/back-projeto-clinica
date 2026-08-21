@@ -115,7 +115,7 @@ export function addMinutesToTime(time: string, minutes: number): string {
 }
 
 export function normalizeTimeHHmm(time: string): string | null {
-  const match = time.trim().match(/^(\d{1,2}):(\d{2})$/)
+  const match = time.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
   if (!match) return null
   const h = Number(match[1])
   const min = Number(match[2])

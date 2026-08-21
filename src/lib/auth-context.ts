@@ -1,5 +1,7 @@
 import type { FastifyRequest } from "fastify"
 import prisma from "@/lib/prisma.js"
+import { getPermissionsForRole } from "@/lib/permissions.js"
+import { resolveUserPermissions } from "@/lib/clinic-roles.js"
 import type { AuthContext, JwtPayload } from "@/types/index.js"
 
 type RequestWithUser = FastifyRequest & { user: JwtPayload }
@@ -33,12 +35,18 @@ export async function buildAuthContext(userId: string, clinicId?: string): Promi
     resolvedClinicId = link?.clinicId ?? ""
   }
 
+  const hasClinicalProfile = Boolean(user.doctorProfile?.id)
+  const permissions = resolvedClinicId
+    ? await resolveUserPermissions(user.id, resolvedClinicId, user.role, hasClinicalProfile)
+    : getPermissionsForRole(user.role, { hasClinicalProfile })
   return {
     userId: user.id,
     email: user.email,
     role: user.role,
     clinicId: resolvedClinicId,
     doctorId: user.doctorProfile?.id,
+    hasClinicalProfile,
+    permissions,
     linkedDoctorIds:
       user.role === "RECEPTION"
         ? user.linkedDoctors.map((l) => l.doctorId)
@@ -50,8 +58,16 @@ export function appointmentDoctorFilter(ctx: AuthContext): { doctorId?: string |
   if (ctx.role === "DOCTOR" && ctx.doctorId) {
     return { doctorId: ctx.doctorId }
   }
-  if (ctx.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
-    return { doctorId: { in: ctx.linkedDoctorIds } }
-  }
   return {}
+}
+
+/** Paciente visível na agenda: permissão geral, gestão da agenda ou consulta do próprio médico. */
+export function canViewAppointmentPatient(
+  ctx: AuthContext,
+  apt: { doctorId?: string | null }
+): boolean {
+  if (ctx.permissions?.includes("patients:view")) return true
+  if (ctx.permissions?.includes("agenda:manage")) return true
+  if (ctx.role === "DOCTOR" && ctx.doctorId && apt.doctorId === ctx.doctorId) return true
+  return false
 }

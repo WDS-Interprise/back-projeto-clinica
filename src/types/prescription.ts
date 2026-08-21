@@ -15,6 +15,7 @@ export type PrescriptionItemInput = {
 export type CreatePrescriptionInput = {
   patientId: string
   appointmentId?: string
+  encounterId?: string
   receiptType?: "SIMPLE" | "SPECIAL"
   prescriptionDate?: string
   showDate?: boolean
@@ -27,6 +28,7 @@ export type UpdatePrescriptionInput = Partial<{
   showDate: boolean
   notes: string
   appointmentId: string | null
+  encounterId: string | null
 }>
 
 export type FinalizePrescriptionInput = {

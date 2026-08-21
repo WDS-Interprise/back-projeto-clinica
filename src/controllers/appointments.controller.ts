@@ -53,8 +53,13 @@ export async function create(req: FastifyRequest, reply: FastifyReply) {
     if (error.message === "DOCTOR_NOT_LINKED" || error.message === "DOCTOR_NOT_ALLOWED") {
       return reply.status(403).send({ error: "Profissional nao permitido" })
     }
+    if (error.message === "DOCTOR_NOT_IN_CLINIC") {
+      return reply.status(400).send({
+        error: "Profissional nao pertence a esta clinica. Selecione um medico da equipe atual.",
+      })
+    }
     if (error.message === "LUNCH_HOURS") {
-      return reply.status(400).send({ error: "Horario de almoco — nao e possivel agendar consultas" })
+      return reply.status(400).send({ error: "Horario de almoco. nao e possivel agendar consultas" })
     }
     if (error.message === "OUTSIDE_WORK_HOURS") {
       return reply.status(400).send({ error: "Horario fora do expediente da clinica" })
@@ -98,11 +103,30 @@ export async function update(req: FastifyRequest, reply: FastifyReply) {
     }
     return reply.send(appointment)
   } catch (error: any) {
-    if (error.message === "DOCTOR_NOT_LINKED") {
+    if (error.message === "DOCTOR_NOT_LINKED" || error.message === "DOCTOR_NOT_ALLOWED") {
       return reply.status(403).send({ error: "Profissional nao permitido" })
     }
+    if (error.message === "DOCTOR_NOT_IN_CLINIC") {
+      return reply.status(400).send({
+        error: "Profissional nao pertence a esta clinica. Selecione um medico da equipe atual.",
+      })
+    }
     if (error.message === "APPOINTMENT_CLOSED") {
-      return reply.status(400).send({ error: "Atendimento finalizado — CID não pode ser alterado" })
+      return reply.status(400).send({ error: "Atendimento finalizado. CID não pode ser alterado" })
+    }
+    if (error.message === "INVALID_STATUS_TRANSITION") {
+      return reply.status(400).send({ error: "Transicao de status invalida para este agendamento" })
+    }
+    if (error.message === "CLINICAL_STATUS_FORBIDDEN") {
+      return reply.status(403).send({
+        error: "Somente profissional clinico pode iniciar ou finalizar atendimento",
+      })
+    }
+    if (error.message === "LUNCH_HOURS") {
+      return reply.status(400).send({ error: "Horario de almoco. nao e possivel agendar consultas" })
+    }
+    if (error.message === "OUTSIDE_WORK_HOURS") {
+      return reply.status(400).send({ error: "Horario fora do expediente da clinica" })
     }
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao atualizar consulta" })
@@ -135,8 +159,17 @@ export async function charge(req: FastifyRequest, reply: FastifyReply) {
     if (error.message === "BILLING_NOT_FOUND" || error.message === "NOT_FOUND") {
       return reply.status(404).send({ error: "Cobranca nao encontrada" })
     }
+    if (error.message === "ASAAS_NOT_CONFIGURED") {
+      return reply.status(503).send({ error: "ClinMax Pay não está configurado no servidor (ASAAS_API_KEY)" })
+    }
+    if (error.message === "INVALID_AMOUNT") {
+      return reply.status(400).send({ error: "Valor inválido" })
+    }
+    if (error.message === "PATIENT_REQUIRED") {
+      return reply.status(400).send({ error: "Consulta sem paciente" })
+    }
     req.log.error(error)
-    return reply.status(500).send({ error: "Erro ao gerar cobranca" })
+    return reply.status(500).send({ error: error.message || "Erro ao gerar cobranca" })
   }
 }
 
@@ -177,7 +210,8 @@ export async function reminder(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
     const { id } = req.params as { id: string }
-    const body = (req.body as { templateId?: string; body?: string }) ?? {}
+    const body =
+      (req.body as { templateId?: string; body?: string; purpose?: "reminder" | "reschedule" }) ?? {}
     const appointment = await appointmentService.sendReminder(ctx, id, body)
     return reply.send(appointment)
   } catch (error: any) {
@@ -207,5 +241,27 @@ export async function reminder(req: FastifyRequest, reply: FastifyReply) {
     }
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao enviar lembrete" })
+  }
+}
+
+export async function aiDraft(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromReq(req)
+    const { id } = req.params as { id: string }
+    const { suggestAttendanceDraft } = await import("@/services/attendance-ai.service.js")
+    const draft = await suggestAttendanceDraft(ctx, id)
+    return reply.send(draft)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : ""
+    if (message === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Consulta nao encontrada" })
+    }
+    if (message === "OPENROUTER_NOT_CONFIGURED") {
+      return reply.status(503).send({ error: "IA do atendimento nao configurada. Defina OPENROUTER_API_KEY." })
+    }
+    req.log.error(error)
+    return reply.status(502).send({
+      error: "Nao foi possivel gerar o rascunho com a IA. Confira a chave do OpenRouter e tente de novo.",
+    })
   }
 }

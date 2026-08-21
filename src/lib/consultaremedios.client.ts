@@ -37,6 +37,66 @@ export function substanceToCrSlug(substanceName: string) {
   return normalizeSlug(primary)
 }
 
+const SKIP_SLUG_TOKENS = new Set([
+  "cloridrato",
+  "dicloridrato",
+  "maleato",
+  "besilato",
+  "succinato",
+  "fosfato",
+  "acetato",
+  "sulfato",
+  "citrato",
+  "bromidrato",
+  "mesilato",
+  "para",
+])
+
+export function queryToCrSlugs(query: string, extraHints: string[] = []): string[] {
+  const slugs = new Set<string>()
+  const add = (value: string) => {
+    const slug = normalizeSlug(value)
+    if (!slug || SKIP_SLUG_TOKENS.has(slug)) return
+    slugs.add(slug)
+  }
+
+  const trimmed = query.trim()
+  if (trimmed) {
+    add(trimmed)
+    for (const token of trimmed.split(/\s+/)) {
+      if (token.length >= 4) add(token)
+    }
+  }
+  for (const hint of extraHints) {
+    if (hint.trim()) add(hint)
+  }
+  return [...slugs]
+}
+
+export async function probeConsultaRemediosProduct(slug: string): Promise<{
+  slug: string
+  productTitle?: string
+  substanceHint?: string
+} | null> {
+  const html = await fetchCrHtml(slug)
+  if (!html) return null
+
+  const parsed = parseConsultaRemediosBula(html)
+  const sectionCount = Object.keys(parsed.parsed).length
+  if (sectionCount < 2) return null
+
+  const composicao = parsed.parsed.composicao ?? ""
+  const substanceHint =
+    composicao.match(/(?:cada|contém|composto)[^.\n]{0,120}/i)?.[0] ??
+    composicao.split("\n")[0]?.trim()
+
+  return {
+    slug,
+    productTitle: parsed.productTitle,
+    substanceHint: substanceHint?.slice(0, 200),
+  }
+}
+
 function stripProseHtml(html: string) {
   return dedupeParagraphs(
     html

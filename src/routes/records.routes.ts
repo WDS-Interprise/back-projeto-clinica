@@ -28,8 +28,8 @@ function validate(schema: z.ZodSchema) {
 export default async function (app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
 
-  app.get("/", list)
-  app.get("/:id", getById)
+  app.get("/", { preHandler: [app.requirePermission("records:view")] }, list)
+  app.get("/:id", { preHandler: [app.requirePermission("records:view")] }, getById)
   app.post("/", {
     preHandler: [app.requirePermission("records:write"), validate(recordSchema)],
   }, create)

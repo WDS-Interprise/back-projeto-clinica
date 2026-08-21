@@ -101,6 +101,32 @@ function pickBestBula(items: PharmadbBulaSummary[], substanceName: string) {
   return scored[0]?.item
 }
 
+export async function searchPharmadbProducts(query: string, limit = 10): Promise<PharmadbBulaSummary[]> {
+  const token = await getToken()
+  if (!token) return []
+
+  const q = encodeURIComponent(query.trim())
+  try {
+    const search = await pharmadbFetch<{ items?: PharmadbBulaSummary[] }>(
+      `/v1/bulas/busca?q=${q}&page=1&per_page=${limit}`,
+      token
+    )
+    return search.items ?? []
+  } catch {
+    return []
+  }
+}
+
+export async function fetchPharmadbBulaById(bulaId: string | number): Promise<PharmadbBulaDetail | null> {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    return await pharmadbFetch<PharmadbBulaDetail>(`/v1/bulas/${bulaId}`, token)
+  } catch {
+    return null
+  }
+}
+
 export async function fetchPharmadbBula(substanceName: string) {
   const token = await getToken()
   if (!token) return null

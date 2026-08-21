@@ -9,21 +9,30 @@ import { FRONTEND_URL, JWT_EXPIRES, JWT_SECRET } from "@/lib/env.js"
 import { getPermissionsForRole, getRedirectPath } from "@/lib/permissions.js"
 import { validatePassword } from "@/lib/password.js"
 import { validateRegisterData, validateUserCreate } from "@/lib/duplicate-validation.js"
-import { sendClinicInviteEmail } from "@/services/mail.service.js"
+import { sendClinicInviteEmail, sendJoinRequestApprovedEmail, sendJoinRequestRejectedEmail } from "@/services/mail.service.js"
 import type { JwtPayload } from "@/types/index.js"
 
 const ROLE_LABELS: Record<Role, string> = {
   ADMIN: "Administrador(a)",
-  DOCTOR: "Médico(a)",
+  DOCTOR: "Profissional de saúde",
   RECEPTION: "Recepcionista",
+  CONSULTANT: "Consultor(a)",
+  FINANCE: "Financeiro",
 }
 
 const ROLE_LABEL_MAP: Record<string, Role> = {
   Médico: "DOCTOR",
   Recepcionista: "RECEPTION",
   "Administrador(a) da clínica": "ADMIN",
-  "Consultor(a) de TI/Negócios": "ADMIN",
+  "Consultor(a) de TI/Negócios": "CONSULTANT",
   "Outro profissional de saúde": "DOCTOR",
+  "Proprietário / Administrador": "ADMIN",
+  Administrador: "ADMIN",
+  "Profissional de saúde": "DOCTOR",
+  "Administrador e profissional de saúde": "ADMIN",
+  "Consultor / Implantação": "CONSULTANT",
+  Consultor: "CONSULTANT",
+  Financeiro: "FINANCE",
   Paciente: "ADMIN",
 }
 
@@ -63,7 +72,9 @@ async function buildAuthSession(userId: string, clinicId: string) {
 
   const clinics = await loadUserClinics(userId)
   const clinic = clinics.find((c) => c.id === clinicId)
-  const permissions = getPermissionsForRole(user.role)
+  const permissions = getPermissionsForRole(user.role, {
+    hasClinicalProfile: Boolean(user.doctorProfile?.id),
+  })
   const provisionedByClinic = await isProvisionedByClinic(userId, clinicId)
 
   const token = generateToken({
@@ -107,11 +118,18 @@ export async function ensureClinicInviteCode(clinicId: string) {
       })
       return updated.inviteCode!
     } catch {
-      // collision — retry
+      // collision. retry
     }
   }
 
   throw Object.assign(new Error("INVITE_CODE_FAILED"), { code: "INVITE_CODE_FAILED" })
+}
+
+async function readInviteCodeRole(clinicId: string): Promise<Role | null> {
+  const rows = await prisma.$queryRaw<Array<{ inviteCodeRole: Role | null }>>`
+    SELECT inviteCodeRole FROM Clinic WHERE id = ${clinicId}
+  `
+  return rows[0]?.inviteCodeRole ?? null
 }
 
 export async function getClinicInviteOverview(clinicId: string) {
@@ -125,8 +143,12 @@ export async function getClinicInviteOverview(clinicId: string) {
     },
   })
 
+  const inviteCodeRole = await readInviteCodeRole(clinicId)
+
   return {
     inviteCode,
+    inviteCodeRole,
+    inviteCodeRoleLabel: inviteCodeRole ? ROLE_LABELS[inviteCodeRole] : null,
     invites: invites.map((invite) => ({
       id: invite.id,
       email: invite.email,
@@ -139,6 +161,7 @@ export async function getClinicInviteOverview(clinicId: string) {
       invitedBy: invite.invitedBy,
       acceptedBy: invite.acceptedBy,
     })),
+    joinRequests: await listJoinRequests(clinicId),
   }
 }
 
@@ -198,6 +221,10 @@ export async function createEmailInvite(
     invitedByName: invitedBy.name,
   })
 
+  if (!mailResult.delivered && "error" in mailResult && mailResult.error) {
+    console.warn("[invite] Convite criado, mas e-mail falhou:", mailResult.error)
+  }
+
   return {
     invite: {
       id: invite.id,
@@ -211,6 +238,7 @@ export async function createEmailInvite(
     inviteUrl,
     inviteCode,
     emailDelivered: mailResult.delivered,
+    emailError: "error" in mailResult ? mailResult.error : undefined,
     emailPreview: "preview" in mailResult ? mailResult.preview : undefined,
   }
 }
@@ -231,16 +259,32 @@ export async function regenerateInviteCode(clinicId: string) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const inviteCode = generateInviteCode()
     try {
-      return await prisma.clinic.update({
+      const updated = await prisma.clinic.update({
         where: { id: clinicId },
         data: { inviteCode },
         select: { inviteCode: true },
       })
+      return {
+        inviteCode: updated.inviteCode,
+        inviteCodeRole: await readInviteCodeRole(clinicId),
+      }
     } catch {
-      // collision — retry
+      // collision. retry
     }
   }
   throw Object.assign(new Error("INVITE_CODE_FAILED"), { code: "INVITE_CODE_FAILED" })
+}
+
+export async function setInviteCodeRole(clinicId: string, role: Role | null) {
+  await prisma.$executeRaw`
+    UPDATE Clinic SET inviteCodeRole = ${role} WHERE id = ${clinicId}
+  `
+  const clinic = await prisma.clinic.findUnique({
+    where: { id: clinicId },
+    select: { inviteCode: true },
+  })
+  if (!clinic) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+  return { inviteCode: clinic.inviteCode, inviteCodeRole: role }
 }
 
 export async function previewInviteToken(token: string) {
@@ -272,6 +316,7 @@ type JoinProfile = {
   specialty?: string
   phone?: string
   cpf?: string
+  profession?: string
 }
 
 async function linkUserToClinic(
@@ -321,6 +366,7 @@ async function linkUserToClinic(
             phone: profile?.phone?.trim() || user.phone || "11999999999",
             crm,
             specialty,
+            professionalType: profile?.profession?.trim() || existingDoctor.professionalType,
             available: true,
             hasOwnAgenda: true,
           },
@@ -335,7 +381,7 @@ async function linkUserToClinic(
             cpf: profile?.cpf,
             crm,
             specialty,
-            professionalType: "Médico",
+            professionalType: profile?.profession?.trim() || "Profissional de saúde",
             hasOwnAgenda: true,
             available: true,
           },
@@ -343,6 +389,27 @@ async function linkUserToClinic(
       }
     }
   })
+}
+
+export async function previewClinicCode(rawCode: string) {
+  const inviteCode = normalizeInviteCode(rawCode)
+  if (!inviteCode) {
+    throw Object.assign(new Error("Código inválido"), { code: "INVALID_CODE" })
+  }
+  const clinic = await prisma.clinic.findFirst({
+    where: { inviteCode, active: true },
+    select: { id: true, name: true },
+  })
+  if (!clinic) {
+    throw Object.assign(new Error("Código de clínica não encontrado"), { code: "INVALID_CODE" })
+  }
+  const inviteCodeRole = await readInviteCodeRole(clinic.id)
+  return {
+    clinicId: clinic.id,
+    clinicName: clinic.name,
+    role: inviteCodeRole,
+    roleLabel: inviteCodeRole ? ROLE_LABELS[inviteCodeRole] : null,
+  }
 }
 
 export async function joinByInviteCode(userId: string, rawCode: string, profile?: JoinProfile) {
@@ -358,15 +425,164 @@ export async function joinByInviteCode(userId: string, rawCode: string, profile?
     throw Object.assign(new Error("Código de clínica não encontrado"), { code: "INVALID_CODE" })
   }
 
-  const role = profile?.roleLabel ? ROLE_LABEL_MAP[profile.roleLabel] ?? "DOCTOR" : "DOCTOR"
+  const role = await readInviteCodeRole(clinic.id)
   if (role === "DOCTOR" && !profile?.crm?.trim()) {
-    throw Object.assign(new Error("Informe o CRM para entrar como médico"), {
+    throw Object.assign(new Error("Informe o registro profissional para entrar como profissional de saúde"), {
       code: "CRM_REQUIRED",
     })
   }
 
-  await linkUserToClinic(userId, clinic.id, role, profile)
-  return buildAuthSession(userId, clinic.id)
+  const alreadyLinked = await prisma.userClinic.findFirst({
+    where: { userId, clinicId: clinic.id, active: true },
+  })
+  if (alreadyLinked) {
+    throw Object.assign(new Error("Usuário já participa desta clínica"), { code: "ALREADY_MEMBER" })
+  }
+
+  const pending = await prisma.clinicJoinRequest.findFirst({
+    where: { userId, clinicId: clinic.id, status: "PENDING" },
+  })
+  if (pending) {
+    throw Object.assign(new Error("Você já possui uma solicitação pendente nesta clínica"), {
+      code: "JOIN_PENDING",
+    })
+  }
+
+  await prisma.clinicJoinRequest.create({
+    data: {
+      clinicId: clinic.id,
+      userId,
+      requestedRole: role,
+      profession: profile?.profession?.trim() || null,
+      crm: profile?.crm?.trim() || null,
+      specialty: profile?.specialty?.trim() || null,
+    },
+  })
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { doctorProfile: { select: { id: true } } },
+  })
+  if (!user) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+
+  const permissions = getPermissionsForRole(user.role, {
+    hasClinicalProfile: Boolean(user.doctorProfile?.id),
+  })
+  const token = generateToken({
+    userId: user.id,
+    email: user.email,
+    role: user.role,
+    clinicId: "none",
+  })
+
+  return {
+    pendingApproval: true,
+    clinicName: clinic.name,
+    requestedRole: role,
+    roleLabel: ROLE_LABELS[role],
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      isAccountAdmin: user.isAccountAdmin,
+      doctorId: user.doctorProfile?.id,
+    },
+    clinicId: null,
+    clinics: [],
+    permissions,
+    redirectPath: "/aguardando-acesso",
+    needsOnboarding: false,
+    provisionedByClinic: false,
+  }
+}
+
+export async function listJoinRequests(clinicId: string) {
+  const rows = await prisma.clinicJoinRequest.findMany({
+    where: { clinicId, status: "PENDING" },
+    orderBy: { createdAt: "desc" },
+    include: { user: { select: { id: true, name: true, email: true } } },
+  })
+  return rows.map((row) => ({
+    id: row.id,
+    requestedRole: row.requestedRole,
+    roleLabel: row.requestedRole ? ROLE_LABELS[row.requestedRole] : "A definir",
+    status: row.status,
+    profession: row.profession,
+    crm: row.crm,
+    specialty: row.specialty,
+    createdAt: row.createdAt,
+    user: row.user,
+  }))
+}
+
+export async function approveJoinRequest(
+  clinicId: string,
+  requestId: string,
+  reviewerId: string,
+  assignedRole?: Role
+) {
+  const request = await prisma.clinicJoinRequest.findFirst({
+    where: { id: requestId, clinicId, status: "PENDING" },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+      clinic: { select: { name: true } },
+    },
+  })
+  if (!request) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+
+  const role = request.requestedRole ?? assignedRole
+  if (!role) {
+    throw Object.assign(new Error("Defina o cargo antes de aprovar"), { code: "ROLE_REQUIRED" })
+  }
+
+  await linkUserToClinic(request.userId, clinicId, role, {
+    crm: request.crm ?? undefined,
+    specialty: request.specialty ?? undefined,
+    profession: request.profession ?? undefined,
+  })
+
+  await prisma.clinicJoinRequest.update({
+    where: { id: request.id },
+    data: { status: "APPROVED", requestedRole: role, reviewedAt: new Date(), reviewedById: reviewerId },
+  })
+
+  const { assignDefaultRoleToUserClinic } = await import("@/lib/clinic-roles.js")
+  await assignDefaultRoleToUserClinic(request.userId, clinicId, role).catch(() => undefined)
+
+  void sendJoinRequestApprovedEmail({
+    to: request.user.email,
+    userName: request.user.name,
+    clinicName: request.clinic.name,
+    roleLabel: ROLE_LABELS[role],
+  }).catch((err) => console.warn("[invite] E-mail de aprovação falhou:", err))
+
+  return { ok: true }
+}
+
+export async function rejectJoinRequest(clinicId: string, requestId: string, reviewerId: string) {
+  const request = await prisma.clinicJoinRequest.findFirst({
+    where: { id: requestId, clinicId, status: "PENDING" },
+    include: {
+      user: { select: { id: true, name: true, email: true } },
+      clinic: { select: { name: true } },
+    },
+  })
+  if (!request) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
+
+  await prisma.clinicJoinRequest.update({
+    where: { id: request.id },
+    data: { status: "REJECTED", reviewedAt: new Date(), reviewedById: reviewerId },
+  })
+
+  void sendJoinRequestRejectedEmail({
+    to: request.user.email,
+    userName: request.user.name,
+    clinicName: request.clinic.name,
+  }).catch((err) => console.warn("[invite] E-mail de rejeição falhou:", err))
+
+  return { ok: true }
 }
 
 export async function acceptInviteToken(

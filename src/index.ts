@@ -10,7 +10,8 @@ import dashboardRoutes from "@/routes/dashboard.routes.js"
 import proceduresRoutes from "@/routes/procedures.routes.js"
 import backofficeRoutes from "@/routes/backoffice.routes.js"
 import type { JwtPayload } from "@/types/index.js"
-import { hasPermission, type Permission } from "@/lib/permissions.js"
+import { type Permission } from "@/lib/permissions.js"
+import { buildAuthContext } from "@/lib/auth-context.js"
 import { assertPlatformOwner } from "@/services/backoffice.service.js"
 import userRoutes from "@/routes/users.routes.js"
 import clinicRoutes from "@/routes/clinics.routes.js"
@@ -31,6 +32,15 @@ import reportsRoutes from "@/routes/reports.routes.js"
 import inventoryRoutes from "@/routes/inventory.routes.js"
 import tissRoutes from "@/routes/tiss.routes.js"
 import satisfactionRoutes from "@/routes/satisfaction.routes.js"
+import webhooksRoutes from "@/routes/webhooks.routes.js"
+import clinicRoleRoutes from "@/routes/clinic-role.routes.js"
+import backofficeSaasRoutes from "@/routes/backoffice-saas.routes.js"
+import subscriptionRoutes from "@/routes/subscription.routes.js"
+import encounterRoutes from "@/routes/encounters.routes.js"
+import { type PlanFeature } from "@/lib/plan-features.js"
+import { clinicHasFeature } from "@/lib/plan-entitlements.js"
+import { ensurePlatformPlansAndSettings, migrateExistingClinicsToLegacy } from "@/lib/saas-billing-seed.js"
+import { runSubscriptionLifecycle } from "@/services/subscription-lifecycle.service.js"
 import { JWT_SECRET, PORT } from "@/lib/env.js"
 import { resolveCorsOrigins } from "@/lib/cors.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
@@ -78,7 +88,8 @@ app.decorate("requirePermission", (...perms: Permission[]) => {
     if (!payload) {
       return reply.status(401).send({ error: "Nao autenticado" })
     }
-    const ok = perms.some((p) => hasPermission(payload.role, p))
+    const ctx = await buildAuthContext(payload.userId, payload.clinicId)
+    const ok = perms.some((p) => ctx.permissions.includes(p))
     if (!ok) {
       return reply.status(403).send({ error: "Permissao negada" })
     }
@@ -97,6 +108,21 @@ app.decorate("requirePlatformOwner", async (req: any, reply: any) => {
   }
 })
 
+app.decorate("requirePlanFeature", (...features: PlanFeature[]) => {
+  return async (req: any, reply: any) => {
+    const payload = req.user as JwtPayload
+    if (!payload?.clinicId) {
+      return reply.status(401).send({ error: "Nao autenticado" })
+    }
+    for (const feature of features) {
+      const ok = await clinicHasFeature(payload.clinicId, feature)
+      if (!ok) {
+        return reply.status(403).send({ error: "PLAN_FEATURE_REQUIRED", feature })
+      }
+    }
+  }
+})
+
 app.get("/api/health", async () => {
   return { status: "ok", timestamp: new Date().toISOString() }
 })
@@ -105,10 +131,13 @@ await app.register(authRoutes, { prefix: "/api/auth" })
 await app.register(patientRoutes, { prefix: "/api/patients" })
 await app.register(doctorRoutes, { prefix: "/api/doctors" })
 await app.register(appointmentRoutes, { prefix: "/api/appointments" })
+await app.register(encounterRoutes, { prefix: "/api/encounters" })
 await app.register(recordRoutes, { prefix: "/api/records" })
 await app.register(dashboardRoutes, { prefix: "/api/dashboard" })
 await app.register(proceduresRoutes, { prefix: "/api/procedures" })
 await app.register(backofficeRoutes, { prefix: "/api/backoffice" })
+await app.register(backofficeSaasRoutes, { prefix: "/api/backoffice" })
+await app.register(subscriptionRoutes, { prefix: "/api/subscription" })
 await app.register(userRoutes, { prefix: "/api/users" })
 await app.register(clinicRoutes, { prefix: "/api/clinics" })
 await app.register(clinicInviteRoutes, { prefix: "/api/clinics" })
@@ -129,10 +158,19 @@ await app.register(reportsRoutes, { prefix: "/api/reports" })
 await app.register(inventoryRoutes, { prefix: "/api/inventory" })
 await app.register(tissRoutes, { prefix: "/api/tiss" })
 await app.register(satisfactionRoutes, { prefix: "/api/satisfaction" })
+await app.register(clinicRoleRoutes, { prefix: "/api/clinic-roles" })
+await app.register(webhooksRoutes, { prefix: "/api/webhooks" })
 await app.register(publicPrescriptionRoutes, { prefix: "/api/public" })
 
-app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
+app.listen({ port: PORT, host: "0.0.0.0" }).then(async () => {
   console.log(`[ClinMax API] running on http://localhost:${PORT}`)
+  try {
+    await ensurePlatformPlansAndSettings()
+    await migrateExistingClinicsToLegacy()
+    await runSubscriptionLifecycle()
+  } catch (err) {
+    console.warn("[SaaS Billing] seed/migration on boot:", err)
+  }
   void resumeWhatsappSessionsOnBoot()
   startWhatsappScheduler()
 })

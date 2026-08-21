@@ -1,4 +1,4 @@
-/** Presença do contato (paciente) recebida via Baileys — ex.: digitando no WhatsApp. */
+/** Presença do contato (paciente) recebida via Baileys. ex.: digitando no WhatsApp. */
 const composingUntilByJid = new Map<string, number>()
 
 const COMPOSING_TTL_MS = 25_000

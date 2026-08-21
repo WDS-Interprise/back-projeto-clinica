@@ -3,6 +3,7 @@ import {
   normalizeCpf,
   validatePatientCreate,
   validatePatientUpdate,
+  findPatientMatch,
 } from "@/lib/duplicate-validation.js"
 import type { AuthContext } from "@/types/index.js"
 
@@ -18,12 +19,13 @@ const CLINICAL_FIELDS = [
 
 export async function list(
   ctx: AuthContext,
-  params: { search?: string; page?: number; limit?: number }
+  params: { search?: string; page?: number; limit?: number; includeInactive?: boolean }
 ) {
-  const { search, page = 1, limit = 20 } = params
+  const { search, page = 1, limit = 20, includeInactive = false } = params
   const skip = (page - 1) * limit
 
   const where: Record<string, unknown> = { clinicId: ctx.clinicId }
+  if (!includeInactive) where.active = true
 
   if (search) {
     where.OR = [
@@ -44,7 +46,13 @@ export async function list(
     prisma.patient.count({ where }),
   ])
 
-  return { data, total, page, totalPages: Math.ceil(total / limit) }
+  const canReadClinical = ctx.permissions.includes("records:view")
+  return {
+    data: canReadClinical ? data : data.map((p) => stripClinicalFields(p)),
+    total,
+    page,
+    totalPages: Math.ceil(total / limit),
+  }
 }
 
 export async function getById(ctx: AuthContext, id: string) {
@@ -52,21 +60,33 @@ export async function getById(ctx: AuthContext, id: string) {
     where: { id, clinicId: ctx.clinicId },
     include: {
       appointments: { orderBy: { date: "desc" }, take: 10 },
-      records: { orderBy: { date: "desc" }, take: 10 },
+      records: ctx.permissions.includes("records:view")
+        ? { orderBy: { date: "desc" }, take: 10 }
+        : false,
     },
   })
+  if (!patient) return patient
+  if (!ctx.permissions.includes("records:view")) {
+    return stripClinicalFields(patient)
+  }
   return patient
 }
 
 function mapPatientData(data: any, clinicId: string) {
   const mapped: any = { ...data, clinicId }
+  delete mapped.force
   if (typeof data.birthDate === "string") {
     mapped.birthDate = new Date(data.birthDate)
   }
   if (data.email === "") mapped.email = null
   if (typeof data.cpf === "string") {
     const cpfDigits = normalizeCpf(data.cpf)
-    mapped.cpf = cpfDigits.length === 11 ? cpfDigits : `9${Date.now().toString().slice(-10)}`
+    mapped.cpf = cpfDigits.length === 11 ? cpfDigits : null
+  } else if (!data.cpf) {
+    mapped.cpf = null
+  }
+  if (typeof data.phone === "string") {
+    mapped.phone = data.phone.replace(/\D/g, "")
   }
   if (data.phoneHome === "") mapped.phoneHome = null
   if (data.whatsapp === "") mapped.whatsapp = null
@@ -87,16 +107,12 @@ function stripClinicalFields(data: any) {
 
 export async function create(ctx: AuthContext, data: any) {
   await validatePatientCreate(
-    { name: data.name, email: data.email, cpf: data.cpf, phone: data.phone },
+    { name: data.name, email: data.email, cpf: data.cpf, phone: data.phone, force: Boolean(data.force) },
     ctx.clinicId
   )
 
   let payload = mapPatientData(data, ctx.clinicId)
-  const phoneDigits = String(payload.phone ?? "").replace(/\D/g, "")
-  if (phoneDigits.length < 10) {
-    payload.phone = phoneDigits.padEnd(10, "0")
-  }
-  if (ctx.role === "RECEPTION") {
+  if (!ctx.permissions.includes("patients:edit_clinical")) {
     payload = stripClinicalFields(payload)
   }
 
@@ -114,12 +130,13 @@ export async function update(ctx: AuthContext, id: string, data: any) {
     name: data.name,
     email: data.email,
     cpf: data.cpf,
+    phone: data.phone,
   })
 
   let payload = mapPatientData({ ...existing, ...data }, ctx.clinicId)
   delete payload.clinicId
 
-  if (ctx.role === "RECEPTION") {
+  if (!ctx.permissions.includes("patients:edit_clinical")) {
     payload = stripClinicalFields(payload)
   }
 
@@ -127,10 +144,20 @@ export async function update(ctx: AuthContext, id: string, data: any) {
   return patient
 }
 
-export async function remove(ctx: AuthContext, id: string) {
+export async function archive(ctx: AuthContext, id: string) {
   const existing = await prisma.patient.findFirst({
     where: { id, clinicId: ctx.clinicId },
   })
   if (!existing) throw new Error("NOT_FOUND")
-  await prisma.patient.delete({ where: { id } })
+  return prisma.patient.update({
+    where: { id },
+    data: { active: false },
+  })
+}
+
+export async function lookupMatch(
+  ctx: AuthContext,
+  query: { cpf?: string; email?: string; phone?: string }
+) {
+  return findPatientMatch(ctx.clinicId, query)
 }

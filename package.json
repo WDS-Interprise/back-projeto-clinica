@@ -11,6 +11,10 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
+    "mail:test": "node --env-file=.env --import tsx scripts/test-mail.ts",
+    "mail:invite": "node --env-file=.env --import tsx scripts/test-invite-mail.ts",
+    "mail:icons": "node --import tsx scripts/build-email-icons.ts",
+    "mail:hero": "node --import tsx scripts/build-email-hero.ts",
     "db:setup": "prisma db push && npm run db:seed",
     "db:studio": "prisma studio",
     "import:cid": "tsx src/scripts/import-cid.ts"

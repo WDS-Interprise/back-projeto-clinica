@@ -69,7 +69,7 @@ export function scheduleChatsProfileSync(
   const batch = stale.slice(0, SYNC_BATCH)
   for (const c of batch) {
     void refreshChatProfile(c.id).catch(() => {
-      /* ignore — avatar endpoint tenta de novo */
+      /* ignore. avatar endpoint tenta de novo */
     })
   }
 }

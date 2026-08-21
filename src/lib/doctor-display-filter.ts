@@ -9,24 +9,9 @@ export function isDoctorVisibleToPatients(doctor: {
   hasOwnAgenda?: boolean
 }): boolean {
   if (!doctor.available) return false
-  if (doctor.hasOwnAgenda === false) return false
   if (!doctor.userId) return false
-
-  const name = doctor.name.trim()
-  const specialty = doctor.specialty.trim()
-
-  if (name.length < 4 || specialty.length < 3) return false
-  if (TEST_NAME_PATTERN.test(name)) return false
-  if (/^[A-Z0-9]{4,12}$/.test(name.replace(/\s/g, ""))) return false
-
-  const letters = name.replace(/[^a-zA-ZÀ-ú]/gi, "")
-  if (letters.length < 3) return false
-
-  const vowels = (letters.match(/[aeiouàâéêíóôúü]/gi) ?? []).length
-  if (letters.length >= 6 && vowels / letters.length < 0.12) return false
-
-  if (!/[a-zA-ZÀ-ú]/.test(name)) return false
-
+  if (!doctor.name.trim()) return false
+  if (TEST_NAME_PATTERN.test(doctor.name)) return false
   return true
 }
 
@@ -38,6 +23,29 @@ export function formatDoctorForPatientListing(doctor: {
   return {
     id: doctor.id,
     nome: doctor.name.trim(),
-    especialidade: doctor.specialty.trim(),
+    especialidade: doctor.specialty.trim() || "Não informada",
   }
+}
+
+export function doctorNameMatchesQuery(name: string, query: string): boolean {
+  const n = name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+  const q = query
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .trim()
+    .replace(/\b(doutor(?:a)?|dr\.?|dra\.?)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!q) return true
+  const tokens = q.split(/\s+/).filter((t) => t.length >= 2)
+  if (tokens.length === 0) return n.includes(q.replace(/\s/g, ""))
+  const expand = (t: string) => {
+    if (t === "jr" || t === "junior") return ["jr", "junior", "junio"]
+    return [t]
+  }
+  return tokens.every((t) => expand(t).some((alias) => n.includes(alias)))
 }

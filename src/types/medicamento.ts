@@ -26,5 +26,5 @@ export type MedicamentoSearchResponse = {
   substances: MedicamentoSubstancia[]
   totalProducts: number
   totalSubstances: number
-  source: "bulapi" | "cache" | "fallback"
+  source: "bulapi" | "cache" | "fallback" | "catalog"
 }

@@ -57,7 +57,7 @@ function slugify(name: string) {
 
 function dash(value?: string | null) {
   const v = value?.trim()
-  return v ? escapeHtml(v) : "—"
+  return v ? escapeHtml(v) : "-"
 }
 
 function formatDate(d: Date) {
@@ -209,7 +209,7 @@ function buildHeaderDoctorLines(data: PrescriptionPdfData): string {
   }
   const clinicLine = [data.clinicName, data.professionalSpecialty]
     .filter(Boolean)
-    .join(" — ")
+    .join(". ")
   lines.push(`<div>${escapeHtml(clinicLine)}</div>`)
   return lines.join("")
 }
@@ -260,7 +260,7 @@ export async function buildPrescriptionHtml(data: PrescriptionPdfData): Promise<
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
-  <title>${escapeHtml(title)} — ${escapeHtml(data.validationCode)}</title>
+  <title>${escapeHtml(title)}. ${escapeHtml(data.validationCode)}</title>
   <style>
     @page { size: A4 portrait; margin: 0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }

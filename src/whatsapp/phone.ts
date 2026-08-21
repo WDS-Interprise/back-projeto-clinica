@@ -52,7 +52,7 @@ export function phoneToJid(digits: string): string {
   return `${d}@s.whatsapp.net`
 }
 
-/** JID Baileys (@s.whatsapp.net ou @lid — contatos com privacidade). */
+/** JID Baileys (@s.whatsapp.net ou @lid. contatos com privacidade). */
 export function isWhatsappJid(value: string): boolean {
   return value.includes("@")
 }

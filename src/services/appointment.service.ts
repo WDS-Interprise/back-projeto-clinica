@@ -1,3 +1,5 @@
+import { format } from "date-fns"
+import { clinicNowMinutes, clinicTodayIso } from "@/lib/clinic-time.js"
 import {
   addMinutesToTime,
   generateAgendaSlots,
@@ -17,7 +19,13 @@ import {
   parseDateOnly,
   type ProcedureInput,
 } from "@/lib/appointment-helpers.js"
-import { appointmentDoctorFilter } from "@/lib/auth-context.js"
+import { appointmentDoctorFilter, canViewAppointmentPatient } from "@/lib/auth-context.js"
+import { assertDoctorInClinic } from "@/lib/doctor-clinic.js"
+import {
+  assertAppointmentStatusTransition,
+  clinicalStatusRequiresRecordsWrite,
+  isClinicalStatusTransition,
+} from "@/lib/appointment-status.js"
 import type { AuthContext } from "@/types/index.js"
 
 export async function list(
@@ -78,7 +86,7 @@ export async function list(
     prisma.appointment.count({ where }),
   ])
 
-  return { data: data.map(serializeAppointment), total, page, totalPages: Math.ceil(total / limit) }
+  return { data: data.map((row) => presentAppointment(ctx, row)), total, page, totalPages: Math.ceil(total / limit) }
 }
 
 export async function getById(ctx: AuthContext, id: string) {
@@ -86,7 +94,7 @@ export async function getById(ctx: AuthContext, id: string) {
     where: { id, clinicId: ctx.clinicId, ...appointmentDoctorFilter(ctx) },
     include: appointmentInclude,
   })
-  return appointment ? serializeAppointment(appointment) : null
+  return appointment ? presentAppointment(ctx, appointment) : null
 }
 
 type CreateInput = {
@@ -198,6 +206,8 @@ async function createOne(ctx: AuthContext, data: CreateInput, date: Date) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
 
+  await assertDoctorInClinic(ctx.clinicId, data.doctorId)
+
   await validateAppointmentTimes(ctx.clinicId, data.type, data.startTime, data.endTime)
 
   let notes = data.notes ?? null
@@ -277,27 +287,59 @@ export async function update(
   })
   if (!existing) return null
 
-  if (existing.status === "COMPLETED") {
-    const clinicalKeys: (keyof CreateInput)[] = [
-      "mainComplaint",
-      "physicalExam",
-      "currentIllnessHistory",
-      "historyAndAntecedents",
-      "conduct",
-      "prescriptionSummary",
-      "cidCode",
-      "cidDescription",
-      "cidVersion",
-    ]
-    if (clinicalKeys.some((k) => data[k] !== undefined)) {
-      throw new Error("APPOINTMENT_CLOSED")
+  if (data.status && data.status !== existing.status) {
+    assertAppointmentStatusTransition({
+      from: existing.status,
+      to: data.status,
+      type: data.type ?? existing.type,
+    })
+    if (clinicalStatusRequiresRecordsWrite(data.status)) {
+      if (!ctx.permissions.includes("records:write")) {
+        throw new Error("CLINICAL_STATUS_FORBIDDEN")
+      }
     }
+    if (isClinicalStatusTransition(existing.status, data.status) && data.status === "IN_PROGRESS") {
+      // Preferir Encounter.start; ainda permitido para compat, mas exige records:write (já checado).
+    }
+  }
+
+  const clinicalKeys: (keyof CreateInput)[] = [
+    "mainComplaint",
+    "physicalExam",
+    "currentIllnessHistory",
+    "historyAndAntecedents",
+    "conduct",
+    "prescriptionSummary",
+    "cidCode",
+    "cidDescription",
+    "cidVersion",
+  ]
+  const touchesClinical = clinicalKeys.some((k) => data[k] !== undefined)
+  if (touchesClinical && !ctx.permissions.includes("records:write")) {
+    throw new Error("CLINICAL_STATUS_FORBIDDEN")
+  }
+
+  if (existing.status === "COMPLETED" && touchesClinical) {
+    throw new Error("APPOINTMENT_CLOSED")
   }
 
   if (data.doctorId && ctx.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
     if (!ctx.linkedDoctorIds.includes(data.doctorId)) {
       throw new Error("DOCTOR_NOT_LINKED")
     }
+  }
+  if (data.doctorId && ctx.role === "DOCTOR" && ctx.doctorId && data.doctorId !== ctx.doctorId) {
+    throw new Error("DOCTOR_NOT_ALLOWED")
+  }
+  if (data.doctorId) {
+    await assertDoctorInClinic(ctx.clinicId, data.doctorId)
+  }
+
+  const nextType = data.type ?? existing.type
+  const nextStart = data.startTime ?? existing.startTime
+  const nextEnd = data.endTime ?? existing.endTime
+  if (data.startTime || data.endTime || data.type) {
+    await validateAppointmentTimes(ctx.clinicId, nextType, nextStart, nextEnd)
   }
 
   const procedures = data.procedures
@@ -326,6 +368,42 @@ export async function update(
       where: { id },
       data: buildAppointmentUpdateData(data, existing),
     })
+
+    if (data.status === "COMPLETED" && existing.status !== "COMPLETED") {
+      const openEncounter = await tx.encounter.findFirst({
+        where: { appointmentId: id, clinicId: ctx.clinicId, status: "IN_PROGRESS" },
+      })
+      const now = new Date()
+      if (openEncounter) {
+        await tx.encounter.update({
+          where: { id: openEncounter.id },
+          data: { status: "COMPLETED", endedAt: now, lastSavedAt: now },
+        })
+      } else if (existing.patientId && ctx.permissions.includes("records:write")) {
+        await tx.encounter.create({
+          data: {
+            clinicId: ctx.clinicId,
+            appointmentId: id,
+            patientId: existing.patientId,
+            doctorId: existing.doctorId,
+            status: "COMPLETED",
+            startedAt: existing.startedAt ?? now,
+            endedAt: now,
+            lastSavedAt: now,
+            mainComplaint: existing.mainComplaint,
+            physicalExam: existing.physicalExam,
+            currentIllnessHistory: existing.currentIllnessHistory,
+            historyAndAntecedents: existing.historyAndAntecedents,
+            conduct: existing.conduct,
+            prescriptionSummary: existing.prescriptionSummary,
+            notes: existing.notes,
+            cidCode: existing.cidCode,
+            cidDescription: existing.cidDescription,
+            cidVersion: existing.cidVersion,
+          },
+        })
+      }
+    }
   })
 
   return getById(ctx, id)
@@ -340,51 +418,53 @@ export async function remove(ctx: AuthContext, id: string) {
 }
 
 export async function charge(ctx: AuthContext, id: string, amount?: number) {
-  const apt = await prisma.appointment.findFirst({
-    where: { id, clinicId: ctx.clinicId, ...appointmentDoctorFilter(ctx) },
-    include: { billing: true },
-  })
-  if (!apt?.billing) throw new Error("BILLING_NOT_FOUND")
-
-  const charged = amount ?? Number(apt.billing.totalAmount)
-
-  const billing = await prisma.appointmentBilling.update({
-    where: { appointmentId: id },
-    data: {
-      chargedAmount: charged,
-      billingStatus: "CHARGED",
-    },
-  })
-
-  return billing
+  const { chargeAppointment } = await import("./clinmax-pay.service.js")
+  return chargeAppointment(ctx, id, amount)
 }
 
 export async function receipt(ctx: AuthContext, id: string) {
-  const existing = await prisma.appointment.findFirst({
-    where: { id, clinicId: ctx.clinicId },
-  })
-  if (!existing) throw new Error("NOT_FOUND")
-  const billing = await prisma.appointmentBilling.update({
-    where: { appointmentId: id },
-    data: {
-      billingStatus: "RECEIVED",
-      receivedAt: new Date(),
-    },
-  })
-
-  await prisma.appointment.update({
-    where: { id },
-    data: {
-      paymentStatus: "PAID",
-      status: "COMPLETED",
-      endedAt: new Date(),
-    } as Prisma.AppointmentUncheckedUpdateInput,
-  })
-
-  return billing
+  const { receiptAppointment } = await import("./clinmax-pay.service.js")
+  return receiptAppointment(ctx, id)
 }
 
-export async function listFreeSlots(ctx: AuthContext, doctorId: string, dateStr: string) {
+export type SlotQueryOptions = {
+  excludeAppointmentId?: string
+}
+
+export async function listPatientAppointmentsOnDate(
+  ctx: AuthContext,
+  patientId: string,
+  dateStr: string
+) {
+  const day = parseDateOnly(dateStr)
+  const next = new Date(day)
+  next.setDate(next.getDate() + 1)
+  return prisma.appointment.findMany({
+    where: {
+      clinicId: ctx.clinicId,
+      patientId,
+      type: { not: "BLOCK" },
+      date: { gte: day, lt: next },
+      status: { in: ["SCHEDULED", "CONFIRMED"] },
+    },
+    orderBy: { startTime: "asc" },
+    select: {
+      id: true,
+      date: true,
+      startTime: true,
+      endTime: true,
+      doctorId: true,
+      doctor: { select: { name: true } },
+    },
+  })
+}
+
+export async function listFreeSlots(
+  ctx: AuthContext,
+  doctorId: string,
+  dateStr: string,
+  options?: SlotQueryOptions
+) {
   if (ctx.role === "RECEPTION" && ctx.linkedDoctorIds?.length) {
     if (!ctx.linkedDoctorIds.includes(doctorId)) {
       throw new Error("DOCTOR_NOT_LINKED")
@@ -405,13 +485,14 @@ export async function listFreeSlots(ctx: AuthContext, doctorId: string, dateStr:
       doctorId,
       date: { gte: day, lt: next },
       status: { notIn: ["CANCELLED"] },
+      ...(options?.excludeAppointmentId ? { NOT: { id: options.excludeAppointmentId } } : {}),
     },
-    select: { startTime: true, endTime: true },
+    select: { id: true, startTime: true, endTime: true, patientId: true },
   })
 
   const interval = schedule.slotIntervalMinutes
 
-  const horarios = allSlots
+  let horarios = allSlots
     .filter((slot) => {
       const slotEnd = addMinutesToTime(slot, interval)
       return !busy.some((apt) =>
@@ -422,6 +503,12 @@ export async function listFreeSlots(ctx: AuthContext, doctorId: string, dateStr:
       startTime,
       endTime: addMinutesToTime(startTime, interval),
     }))
+
+  const todayStr = clinicTodayIso()
+  if (dateStr === todayStr) {
+    const nowMinutes = clinicNowMinutes()
+    horarios = horarios.filter((h) => timeToMinutes(h.startTime) > nowMinutes)
+  }
 
   return {
     totalSlots: allSlots.length,
@@ -437,14 +524,15 @@ export async function isSlotAvailable(
   ctx: AuthContext,
   doctorId: string,
   dateStr: string,
-  startTime: string
+  startTime: string,
+  options?: SlotQueryOptions
 ) {
   const normalized = normalizeTimeHHmm(startTime)
   if (!normalized) {
-    return { disponivel: false, erro: "Horário inválido — use HH:mm" }
+    return { disponivel: false, erro: "Horário inválido. use HH:mm" }
   }
 
-  const { horarios, intervaloMinutos } = await listFreeSlots(ctx, doctorId, dateStr)
+  const { horarios, intervaloMinutos } = await listFreeSlots(ctx, doctorId, dateStr, options)
   const match = horarios.find((h) => h.startTime === normalized)
 
   return {
@@ -474,7 +562,7 @@ export async function findNextFreeSlot(ctx: AuthContext, doctorId: string, dateS
 export async function sendReminder(
   ctx: AuthContext,
   id: string,
-  options?: { templateId?: string; body?: string }
+  options?: { templateId?: string; body?: string; purpose?: "reminder" | "reschedule" }
 ) {
   const existing = await prisma.appointment.findFirst({
     where: { id, clinicId: ctx.clinicId, ...appointmentDoctorFilter(ctx) },
@@ -488,13 +576,16 @@ export async function sendReminder(
     include: appointmentInclude,
   })
   if (!appointment) throw new Error("NOT_FOUND")
-  return serializeAppointment(appointment)
+  return presentAppointment(ctx, appointment)
 }
 
 function serializeAppointment(apt: any) {
+  const activeEncounter = apt.encounters?.[0] ?? null
   return {
     ...apt,
     time: apt.startTime,
+    encounterId: activeEncounter?.id ?? null,
+    encounterStatus: activeEncounter?.status ?? null,
     totalAmount: apt.billing ? Number(apt.billing.totalAmount) : 0,
     chargedAmount: apt.billing ? Number(apt.billing.chargedAmount) : 0,
     billingStatus: apt.billing?.billingStatus ?? "PENDING",
@@ -506,5 +597,23 @@ function serializeAppointment(apt: any) {
       unitPrice: Number(line.unitPrice),
       subtotal: line.quantity * Number(line.unitPrice),
     })),
+  }
+}
+
+function presentAppointment(ctx: AuthContext, apt: any) {
+  const row = serializeAppointment(apt)
+  if (canViewAppointmentPatient(ctx, apt)) return { ...row, occupancyOnly: false }
+  return {
+    ...row,
+    occupancyOnly: true,
+    patientId: null,
+    patient: null,
+    notes: null,
+    insurancePlan: null,
+    billing: null,
+    billingStatus: null,
+    totalAmount: 0,
+    chargedAmount: 0,
+    procedures: [],
   }
 }

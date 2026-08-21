@@ -25,7 +25,7 @@ const runtime = new Map<string, RuntimeSession>()
 const sessionMode = new Map<string, "qr" | "pairing">()
 const reconnecting = new Set<string>()
 const reconnectAttempts = new Map<string, number>()
-/** Conexões removidas/excluídas — handlers Baileys não devem mais persistir no banco. */
+/** Conexões removidas/excluídas. handlers Baileys não devem mais persistir no banco. */
 const tornDownConnections = new Set<string>()
 const MAX_RECONNECT_ATTEMPTS = 8
 
@@ -56,7 +56,7 @@ function getStatusCode(lastDisconnect: unknown): number | undefined {
   return (lastDisconnect as Boom | undefined)?.output?.statusCode
 }
 
-/** Após escanear o QR o WhatsApp envia close com restartRequired (515) — é esperado. */
+/** Após escanear o QR o WhatsApp envia close com restartRequired (515). é esperado. */
 function shouldAutoReconnect(statusCode: number | undefined): boolean {
   if (statusCode === undefined) return true
   if (statusCode === DisconnectReason.loggedOut) return false
@@ -143,7 +143,7 @@ function bindMessageHandlers(connectionId: string, sock: WASocket) {
   })
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    // "append" = histórico/sincronização — gera avalanche de mensagens duplicadas na plataforma
+    // "append" = histórico/sincronização. gera avalanche de mensagens duplicadas na plataforma
     if (type !== "notify") return
     try {
       const conn = await prisma.whatsappConnection.findUnique({
