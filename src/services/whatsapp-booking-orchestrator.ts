@@ -504,6 +504,7 @@ async function lockTimeAndAskConfirm(
   } catch {
     return null
   }
+  if (!ctx.selectedDate) return null
   const name = ctx.selectedDoctorName || "o profissional"
   const when = dateLabel(ctx.selectedDate)
   const proximos = (parsed.horariosProximos ?? []).map((h) =>
