@@ -17,6 +17,7 @@ export const PLAN_FEATURES = [
   "SATISFACTION",
   "MULTI_PROFESSIONAL",
   "ADVANCED_REPORTS",
+  "AI_ASSISTANT",
 ] as const
 
 export type PlanFeature = (typeof PLAN_FEATURES)[number]
@@ -25,12 +26,18 @@ export const PLAN_LIMIT_KEYS = [
   "maxUsers",
   "maxDoctors",
   "maxWhatsappConnections",
-  "maxAiMessagesPerMonth",
-  "maxAiActionsPerMonth",
+  "maxAiAssistantMessagesPerMonth",
+  "maxAiAutomationActionsPerMonth",
   "maxStorageMb",
 ] as const
 
 export type PlanLimitKey = (typeof PLAN_LIMIT_KEYS)[number]
+
+/** Compatibilidade com JSON antigo gravado no banco. */
+const LEGACY_LIMIT_ALIASES: Record<string, PlanLimitKey> = {
+  maxAiMessagesPerMonth: "maxAiAssistantMessagesPerMonth",
+  maxAiActionsPerMonth: "maxAiAutomationActionsPerMonth",
+}
 
 export type PlanLimits = Partial<Record<PlanLimitKey, number | null>>
 
@@ -52,14 +59,15 @@ export const PLAN_FEATURE_LABELS: Record<PlanFeature, string> = {
   SATISFACTION: "Pesquisa de satisfação",
   MULTI_PROFESSIONAL: "Multi-profissional",
   ADVANCED_REPORTS: "Relatórios avançados",
+  AI_ASSISTANT: "IA assistiva",
 }
 
 export const PLAN_LIMIT_LABELS: Record<PlanLimitKey, string> = {
   maxUsers: "Usuários",
   maxDoctors: "Profissionais",
   maxWhatsappConnections: "WhatsApps conectados",
-  maxAiMessagesPerMonth: "Mensagens IA / mês",
-  maxAiActionsPerMonth: "Ações IA / mês",
+  maxAiAssistantMessagesPerMonth: "IA assistiva / mês",
+  maxAiAutomationActionsPerMonth: "Ações automáticas IA / mês",
   maxStorageMb: "Armazenamento (MB)",
 }
 
@@ -100,6 +108,11 @@ export function parsePlanLimits(json: string | null | undefined): PlanLimits {
   try {
     const parsed = JSON.parse(json) as Record<string, unknown>
     const limits: PlanLimits = {}
+    for (const [legacy, key] of Object.entries(LEGACY_LIMIT_ALIASES)) {
+      if (parsed[key] === undefined && parsed[legacy] !== undefined) {
+        parsed[key] = parsed[legacy]
+      }
+    }
     for (const key of PLAN_LIMIT_KEYS) {
       const raw = parsed[key]
       if (raw === null) limits[key] = null
@@ -120,6 +133,12 @@ export function serializePlanLimits(limits: PlanLimits): string {
   for (const key of PLAN_LIMIT_KEYS) {
     if (limits[key] !== undefined) out[key] = limits[key] ?? null
   }
+  if (out.maxAiAssistantMessagesPerMonth !== undefined) {
+    out.maxAiMessagesPerMonth = out.maxAiAssistantMessagesPerMonth
+  }
+  if (out.maxAiAutomationActionsPerMonth !== undefined) {
+    out.maxAiActionsPerMonth = out.maxAiAutomationActionsPerMonth
+  }
   return JSON.stringify(out)
 }
 
@@ -134,4 +153,19 @@ export function unlimitedLimits(): PlanLimits {
   const limits: PlanLimits = {}
   for (const key of PLAN_LIMIT_KEYS) limits[key] = null
   return limits
+}
+
+/** Entitlement efetivo: base do plano + add-ons + cortesias/overrides. */
+export function mergeEntitlementLimits(base: PlanLimits, addons: PlanLimits = {}, overrides: PlanLimits = {}): PlanLimits {
+  const out: PlanLimits = { ...base }
+  for (const key of PLAN_LIMIT_KEYS) {
+    const extra = addons[key]
+    if (typeof extra === "number" && extra > 0 && typeof out[key] === "number") {
+      out[key] = (out[key] as number) + extra
+    } else if (extra === null) {
+      out[key] = null
+    }
+    if (overrides[key] !== undefined) out[key] = overrides[key]
+  }
+  return out
 }

@@ -35,58 +35,109 @@ function serializeTransaction(row: {
 }
 
 export async function ensureDefaultFinanceSetup(clinicId: string) {
-  const accountCount = await prisma.financialAccount.count({ where: { clinicId } })
-  if (accountCount > 0) return
+  let account = await prisma.financialAccount.findFirst({
+    where: { clinicId, active: true },
+    orderBy: { createdAt: "asc" },
+  })
 
-  const account = await prisma.financialAccount.create({
-    data: {
+  if (!account) {
+    account = await prisma.financialAccount.create({
+      data: {
+        clinicId,
+        name: "Conta principal",
+        initialBalance: 0,
+      },
+    })
+  }
+
+  const categoryCount = await prisma.financialCategory.count({ where: { clinicId } })
+  if (categoryCount === 0) {
+    const incomeCategories = ["Consulta", "Procedimento", "Retorno", "Outras receitas"]
+    const expenseCategories = ["Aluguel", "Salários", "Material", "Impostos", "Outras despesas"]
+    await prisma.financialCategory.createMany({
+      data: [
+        ...incomeCategories.map((name) => ({
+          clinicId,
+          name,
+          kind: "INCOME" as FinancialCategoryKind,
+        })),
+        ...expenseCategories.map((name) => ({
+          clinicId,
+          name,
+          kind: "EXPENSE" as FinancialCategoryKind,
+        })),
+      ],
+    })
+  }
+
+  let costCenter = await prisma.costCenter.findFirst({
+    where: { clinicId, active: true },
+    orderBy: { createdAt: "asc" },
+  })
+  if (!costCenter) {
+    costCenter = await prisma.costCenter.create({
+      data: { clinicId, name: "Geral" },
+    })
+  }
+
+  const paymentCount = await prisma.paymentMethod.count({ where: { clinicId, active: true } })
+  if (paymentCount === 0) {
+    await prisma.paymentMethod.createMany({
+      data: [
+        { clinicId, name: "Dinheiro" },
+        { clinicId, name: "PIX" },
+        { clinicId, name: "Cartão de crédito" },
+        { clinicId, name: "Cartão de débito" },
+        { clinicId, name: "Transferência" },
+      ],
+    })
+  }
+
+  const pix =
+    (await prisma.paymentMethod.findFirst({
+      where: { clinicId, active: true, name: "PIX" },
+    })) ??
+    (await prisma.paymentMethod.findFirst({
+      where: { clinicId, active: true },
+      orderBy: { createdAt: "asc" },
+    }))
+
+  const settings = await prisma.clinicFinanceSettings.findUnique({ where: { clinicId } })
+  const accountStillValid =
+    settings?.defaultAccountId &&
+    (await prisma.financialAccount.findFirst({
+      where: { id: settings.defaultAccountId, clinicId, active: true },
+      select: { id: true },
+    }))
+  const costStillValid =
+    settings?.defaultCostCenterId &&
+    (await prisma.costCenter.findFirst({
+      where: { id: settings.defaultCostCenterId, clinicId, active: true },
+      select: { id: true },
+    }))
+  const methodStillValid =
+    settings?.defaultPaymentMethodId &&
+    (await prisma.paymentMethod.findFirst({
+      where: { id: settings.defaultPaymentMethodId, clinicId, active: true },
+      select: { id: true },
+    }))
+
+  await prisma.clinicFinanceSettings.upsert({
+    where: { clinicId },
+    create: {
       clinicId,
-      name: "Conta principal",
-      initialBalance: 0,
+      defaultAccountId: account.id,
+      defaultCostCenterId: costCenter.id,
+      defaultPaymentMethodId: pix?.id ?? null,
+      autoGenerateOnAppointment: false,
     },
-  })
-
-  const incomeCategories = [
-    "Consulta",
-    "Procedimento",
-    "Retorno",
-    "Outras receitas",
-  ]
-  const expenseCategories = [
-    "Aluguel",
-    "Salários",
-    "Material",
-    "Impostos",
-    "Outras despesas",
-  ]
-
-  await prisma.financialCategory.createMany({
-    data: [
-      ...incomeCategories.map((name) => ({
-        clinicId,
-        name,
-        kind: "INCOME" as FinancialCategoryKind,
-      })),
-      ...expenseCategories.map((name) => ({
-        clinicId,
-        name,
-        kind: "EXPENSE" as FinancialCategoryKind,
-      })),
-    ],
-  })
-
-  await prisma.costCenter.create({
-    data: { clinicId, name: "Geral" },
-  })
-
-  await prisma.paymentMethod.createMany({
-    data: [
-      { clinicId, name: "Dinheiro" },
-      { clinicId, name: "PIX" },
-      { clinicId, name: "Cartão de crédito" },
-      { clinicId, name: "Cartão de débito" },
-      { clinicId, name: "Transferência" },
-    ],
+    update: {
+      defaultAccountId: accountStillValid ? settings?.defaultAccountId ?? account.id : account.id,
+      defaultCostCenterId: costStillValid ? settings?.defaultCostCenterId ?? costCenter.id : costCenter.id,
+      defaultPaymentMethodId: methodStillValid
+        ? settings?.defaultPaymentMethodId ?? pix?.id ?? null
+        : pix?.id ?? null,
+    },
   })
 
   return account
@@ -526,7 +577,32 @@ export async function createCostCenter(ctx: AuthContext, data: { name: string })
 
 export async function updateCostCenter(ctx: AuthContext, id: string, data: { name?: string; active?: boolean }) {
   await assertClinicEntity(ctx.clinicId, "costCenter", id)
-  return prisma.costCenter.update({ where: { id }, data })
+  const name = data.name?.trim()
+  return prisma.costCenter.update({
+    where: { id },
+    data: {
+      ...(name ? { name } : {}),
+      ...(data.active !== undefined ? { active: data.active } : {}),
+    },
+  })
+}
+
+export async function removeCostCenter(ctx: AuthContext, id: string) {
+  await assertClinicEntity(ctx.clinicId, "costCenter", id)
+  const used = await prisma.financialTransaction.count({
+    where: { clinicId: ctx.clinicId, costCenterId: id },
+  })
+  const settings = await prisma.clinicFinanceSettings.findUnique({ where: { clinicId: ctx.clinicId } })
+  if (settings?.defaultCostCenterId === id) {
+    await prisma.clinicFinanceSettings.update({
+      where: { clinicId: ctx.clinicId },
+      data: { defaultCostCenterId: null },
+    })
+  }
+  if (used > 0) {
+    return prisma.costCenter.update({ where: { id }, data: { active: false } })
+  }
+  return prisma.costCenter.delete({ where: { id } })
 }
 
 export async function createPaymentMethod(ctx: AuthContext, data: { name: string }) {
@@ -536,6 +612,24 @@ export async function createPaymentMethod(ctx: AuthContext, data: { name: string
 export async function updatePaymentMethod(ctx: AuthContext, id: string, data: { name?: string; active?: boolean }) {
   await assertClinicEntity(ctx.clinicId, "paymentMethod", id)
   return prisma.paymentMethod.update({ where: { id }, data })
+}
+
+export async function removePaymentMethod(ctx: AuthContext, id: string) {
+  await assertClinicEntity(ctx.clinicId, "paymentMethod", id)
+  const used = await prisma.financialTransaction.count({
+    where: { clinicId: ctx.clinicId, paymentMethodId: id },
+  })
+  const settings = await prisma.clinicFinanceSettings.findUnique({ where: { clinicId: ctx.clinicId } })
+  if (settings?.defaultPaymentMethodId === id) {
+    await prisma.clinicFinanceSettings.update({
+      where: { clinicId: ctx.clinicId },
+      data: { defaultPaymentMethodId: null },
+    })
+  }
+  if (used > 0) {
+    return prisma.paymentMethod.update({ where: { id }, data: { active: false } })
+  }
+  return prisma.paymentMethod.delete({ where: { id } })
 }
 
 export async function financialAnalysis(

@@ -4,6 +4,7 @@ import {
   getRole,
   createRole,
   updateRole,
+  resetRole,
   removeRole,
 } from "@/controllers/clinic-role.controller.js"
 
@@ -14,5 +15,6 @@ export default async function clinicRoleRoutes(app: FastifyInstance) {
   app.get("/roles/:id", { preHandler: manage }, getRole)
   app.post("/roles", { preHandler: manage }, createRole)
   app.put("/roles/:id", { preHandler: manage }, updateRole)
+  app.post("/roles/:id/reset", { preHandler: manage }, resetRole)
   app.delete("/roles/:id", { preHandler: manage }, removeRole)
 }

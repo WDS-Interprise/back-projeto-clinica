@@ -174,10 +174,12 @@ export async function getClinicSubscriptionUsage(req: FastifyRequest, reply: Fas
   if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   const detail = await subscriptionService.getClinicDetail(payload.clinicId)
   if (!detail) return reply.status(404).send({ error: "Clínica não encontrada" })
+  const entitlements = await (await import("@/lib/plan-entitlements.js")).getClinicEntitlements(payload.clinicId)
   return reply.send({
     usage: detail.usage,
     subscription: detail.subscription,
-    features: detail.subscription?.features ?? [],
+    features: entitlements.features,
+    isActive: entitlements.isActive,
   })
 }
 
@@ -194,17 +196,61 @@ export async function listClinicInvoices(req: FastifyRequest, reply: FastifyRepl
 export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
   if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
-  const body = req.body as { planId: string; billingCycle?: BillingCycle }
+  const body = req.body as {
+    planId: string
+    billingCycle?: BillingCycle
+    paymentMethod?: "PIX" | "CREDIT_CARD"
+    creditCard?: {
+      holderName: string
+      number: string
+      expiryMonth: string
+      expiryYear: string
+      ccv: string
+    }
+    creditCardHolderInfo?: {
+      name: string
+      email: string
+      cpfCnpj: string
+      postalCode: string
+      addressNumber: string
+      phone: string
+    }
+  }
   try {
+    const forwarded = req.headers["x-forwarded-for"]
+    const remoteIp =
+      (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined) || req.ip || "127.0.0.1"
     const sub = await subscriptionService.requestPlanChangeByClinic(
       payload.clinicId,
       body.planId,
-      body.billingCycle ?? "MONTHLY"
+      body.billingCycle ?? "MONTHLY",
+      {
+        paymentMethod: body.paymentMethod ?? "PIX",
+        remoteIp,
+        creditCard: body.creditCard,
+        creditCardHolderInfo: body.creditCardHolderInfo,
+      }
     )
     return reply.send(sub)
   } catch (err) {
+    const message =
+      err instanceof billing.BillingRequirementError
+        ? err.message
+        : err instanceof Error && err.message.toLowerCase().includes("cpf")
+          ? "Informe o CNPJ da clínica (ou o CPF do responsável) nas configurações para gerar o pagamento da assinatura."
+          : "Não foi possível alterar o plano"
     req.log.error(err)
-    return reply.status(400).send({ error: "Não foi possível alterar o plano" })
+    return reply.status(400).send({ error: message })
+  }
+}
+
+export async function cancelClinicUpgrade(req: FastifyRequest, reply: FastifyReply) {
+  const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
+  try {
+    return reply.send(await subscriptionService.cancelPendingUpgradeByClinic(payload.clinicId, payload.userId))
+  } catch {
+    return reply.status(400).send({ error: "Não foi possível cancelar a cobrança de upgrade" })
   }
 }
 

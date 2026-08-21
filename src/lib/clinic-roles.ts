@@ -140,39 +140,50 @@ export function roleSlugForUserRole(role: string): string | null {
   return map[role] ?? null
 }
 
+export async function ensureUsersLinkedToSystemRoles(clinicId: string) {
+  await ensureDefaultClinicRoles(clinicId)
+  for (const def of SYSTEM_ROLE_DEFS) {
+    const clinicRole = await prisma.clinicRole.findUnique({
+      where: { clinicId_slug: { clinicId, slug: def.slug } },
+    })
+    if (!clinicRole) continue
+    await prisma.userClinic.updateMany({
+      where: {
+        clinicId,
+        clinicRoleId: null,
+        user: { role: def.role },
+      },
+      data: { clinicRoleId: clinicRole.id },
+    })
+  }
+}
+
 export async function resolveUserPermissions(
   userId: string,
   clinicId: string,
   role: string,
-  hasClinicalProfile: boolean
+  _hasClinicalProfile: boolean
 ): Promise<Permission[]> {
   const link = await prisma.userClinic.findUnique({
     where: { userId_clinicId: { userId, clinicId } },
     include: { clinicRole: true },
   })
 
-  if (link?.clinicRole?.permissionsJson) {
-    const perms = parsePermissionsJson(link.clinicRole.permissionsJson)
-    if (perms.length > 0) {
-      if (role === "ADMIN" && hasClinicalProfile) {
-        const clinical: Permission[] = [
-          "patients:edit_clinical",
-          "records:view",
-          "records:write",
-          "prescriptions:write",
-          "clinical_tools:view",
-        ]
-        const merged = [...perms]
-        for (const p of clinical) {
-          if (!merged.includes(p)) merged.push(p)
-        }
-        return merged
-      }
-      return perms
+  let clinicRole = link?.clinicRole ?? null
+  if (!clinicRole) {
+    const slug = roleSlugForUserRole(role)
+    if (slug) {
+      clinicRole = await prisma.clinicRole.findUnique({
+        where: { clinicId_slug: { clinicId, slug } },
+      })
     }
   }
 
-  return getPermissionsForRole(role, { hasClinicalProfile })
+  if (clinicRole?.permissionsJson) {
+    return parsePermissionsJson(clinicRole.permissionsJson)
+  }
+
+  return getPermissionsForRole(role, { hasClinicalProfile: _hasClinicalProfile })
 }
 
 export async function assignDefaultRoleToUserClinic(userId: string, clinicId: string, role: string) {

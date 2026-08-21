@@ -9,7 +9,7 @@ import type {
 
 function mapError(error: unknown, reply: FastifyReply) {
   const msg = error instanceof Error ? error.message : "UNKNOWN"
-  if (msg === "NOT_FOUND") return reply.status(404).send({ error: "Lançamento não encontrado" })
+  if (msg === "NOT_FOUND") return reply.status(404).send({ error: "Registro não encontrado" })
   if (msg === "INVALID_AMOUNT") return reply.status(400).send({ error: "Valor inválido" })
   if (msg === "TRANSFER_ACCOUNTS_REQUIRED") {
     return reply.status(400).send({ error: "Informe conta de origem e destino" })
@@ -193,6 +193,31 @@ export async function createCostCenter(req: FastifyRequest, reply: FastifyReply)
   }
 }
 
+export async function updateCostCenter(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromRequest(req)
+    const { id } = req.params as { id: string }
+    return reply.send(
+      await financeService.updateCostCenter(ctx, id, req.body as { name?: string; active?: boolean })
+    )
+  } catch (error) {
+    req.log.error(error)
+    return mapError(error, reply)
+  }
+}
+
+export async function removeCostCenter(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromRequest(req)
+    const { id } = req.params as { id: string }
+    await financeService.removeCostCenter(ctx, id)
+    return reply.status(204).send()
+  } catch (error) {
+    req.log.error(error)
+    return mapError(error, reply)
+  }
+}
+
 export async function createPaymentMethod(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromRequest(req)
@@ -200,6 +225,18 @@ export async function createPaymentMethod(req: FastifyRequest, reply: FastifyRep
   } catch (error) {
     req.log.error(error)
     return reply.status(500).send({ error: "Erro interno do servidor" })
+  }
+}
+
+export async function removePaymentMethod(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromRequest(req)
+    const { id } = req.params as { id: string }
+    await financeService.removePaymentMethod(ctx, id)
+    return reply.status(204).send()
+  } catch (error) {
+    req.log.error(error)
+    return mapError(error, reply)
   }
 }
 

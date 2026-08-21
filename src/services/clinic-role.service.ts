@@ -3,16 +3,18 @@ import type { AuthContext } from "@/types/index.js"
 import type { Permission } from "@/lib/permissions.js"
 import {
   ALL_CONFIGURABLE_PERMISSIONS,
-  ensureDefaultClinicRoles,
+  ensureUsersLinkedToSystemRoles,
   PERMISSION_GROUPS,
   presentClinicRole,
+  SYSTEM_ROLE_DEFS,
 } from "@/lib/clinic-roles.js"
+import { getPermissionsForRole } from "@/lib/permissions.js"
 
 export { PERMISSION_GROUPS }
 
 export async function listClinicRoles(ctx: AuthContext) {
   if (!ctx.clinicId) throw new Error("NO_CLINIC")
-  await ensureDefaultClinicRoles(ctx.clinicId)
+  await ensureUsersLinkedToSystemRoles(ctx.clinicId)
   const rows = await prisma.clinicRole.findMany({
     where: { clinicId: ctx.clinicId },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -100,6 +102,29 @@ export async function updateClinicRole(
     data: patch,
     include: { _count: { select: { members: true } } },
   })
+  await ensureUsersLinkedToSystemRoles(ctx.clinicId)
+  return presentClinicRole(row)
+}
+
+export async function resetClinicRole(ctx: AuthContext, id: string) {
+  if (!ctx.clinicId) throw new Error("NO_CLINIC")
+  const existing = await prisma.clinicRole.findFirst({
+    where: { id, clinicId: ctx.clinicId },
+  })
+  if (!existing) throw new Error("NOT_FOUND")
+
+  const systemDef = SYSTEM_ROLE_DEFS.find((d) => d.slug === existing.slug)
+  const permissions = systemDef ? getPermissionsForRole(systemDef.role) : []
+
+  const row = await prisma.clinicRole.update({
+    where: { id },
+    data: {
+      permissionsJson: JSON.stringify(sanitizePermissions(permissions)),
+      ...(existing.isSystem && systemDef ? { name: systemDef.name } : {}),
+    },
+    include: { _count: { select: { members: true } } },
+  })
+  await ensureUsersLinkedToSystemRoles(ctx.clinicId)
   return presentClinicRole(row)
 }
 

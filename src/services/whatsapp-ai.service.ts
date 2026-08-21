@@ -241,7 +241,7 @@ export async function generateAiReply(params: {
 }): Promise<string | null> {
   try {
     await assertClinicFeature(params.clinicId, "WHATSAPP_AI")
-    await assertClinicLimit(params.clinicId, "maxAiMessagesPerMonth")
+    await assertClinicLimit(params.clinicId, "maxAiAssistantMessagesPerMonth")
   } catch {
     console.warn("[WhatsApp AI] plano não inclui IA ou limite atingido:", params.clinicId)
     return null

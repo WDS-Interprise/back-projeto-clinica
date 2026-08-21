@@ -6,6 +6,7 @@ import {
   parsePlanFeatures,
   parsePlanLimits,
   LEGACY_PLAN_SLUG,
+  mergeEntitlementLimits,
 } from "@/lib/plan-features.js"
 import { addDays, startOfMonth, endOfMonth, isAfter } from "date-fns"
 
@@ -76,6 +77,7 @@ async function subscriptionGrantsAccess(
       where: {
         clinicSubscriptionId: sub.id,
         status: { in: ["OVERDUE", "PENDING"] },
+        NOT: { reference: { startsWith: "upgrade:" } },
       },
       orderBy: { dueDate: "asc" },
     })
@@ -109,7 +111,7 @@ export async function getClinicEntitlements(clinicId: string): Promise<ClinicEnt
     planSlug: sub.plan.slug,
     subscriptionStatus: sub.status,
     features: active ? parsePlanFeatures(sub.plan.featuresJson) : [],
-    limits: active ? parsePlanLimits(sub.plan.limitsJson) : {},
+    limits: active ? mergeEntitlementLimits(parsePlanLimits(sub.plan.limitsJson)) : {},
     isActive: active,
   }
 }
@@ -160,8 +162,8 @@ export async function getUsage(clinicId: string, limitKey: PlanLimitKey): Promis
   if (limitKey === "maxDoctors") return countDoctors(clinicId)
   if (limitKey === "maxWhatsappConnections") return countWhatsappConnections(clinicId)
   const usage = await getUsagePeriod(clinicId)
-  if (limitKey === "maxAiMessagesPerMonth") return usage.aiMessagesCount
-  if (limitKey === "maxAiActionsPerMonth") return usage.aiActionsCount
+  if (limitKey === "maxAiAssistantMessagesPerMonth") return usage.aiMessagesCount
+  if (limitKey === "maxAiAutomationActionsPerMonth") return usage.aiActionsCount
   if (limitKey === "maxStorageMb") return usage.storageUsedMb
   return 0
 }
@@ -209,8 +211,8 @@ export async function getClinicUsageSummary(clinicId: string) {
     "maxUsers",
     "maxDoctors",
     "maxWhatsappConnections",
-    "maxAiMessagesPerMonth",
-    "maxAiActionsPerMonth",
+    "maxAiAssistantMessagesPerMonth",
+    "maxAiAutomationActionsPerMonth",
     "maxStorageMb",
   ] as PlanLimitKey[]) {
     const current = await getUsage(clinicId, key)
