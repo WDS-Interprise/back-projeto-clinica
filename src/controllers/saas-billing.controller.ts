@@ -163,6 +163,7 @@ export async function createSubscriptionInvoice(req: FastifyRequest, reply: Fast
 
 export async function getCurrentSubscription(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   const sub = await subscriptionService.getSubscriptionByClinicId(payload.clinicId)
   if (!sub) return reply.status(404).send({ error: "Assinatura não encontrada" })
   return reply.send(sub)
@@ -170,6 +171,7 @@ export async function getCurrentSubscription(req: FastifyRequest, reply: Fastify
 
 export async function getClinicSubscriptionUsage(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   const detail = await subscriptionService.getClinicDetail(payload.clinicId)
   if (!detail) return reply.status(404).send({ error: "Clínica não encontrada" })
   return reply.send({
@@ -185,11 +187,13 @@ export async function listClinicSubscriptionPlans(_req: FastifyRequest, reply: F
 
 export async function listClinicInvoices(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   return reply.send(await billing.listClinicInvoices(payload.clinicId))
 }
 
 export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   const body = req.body as { planId: string; billingCycle?: BillingCycle }
   try {
     const sub = await subscriptionService.requestPlanChangeByClinic(
@@ -206,6 +210,7 @@ export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply)
 
 export async function refreshInvoicePix(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
+  if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
   const { id } = req.params as { id: string }
   try {
     return reply.send(await billing.refreshInvoicePix(id, payload.clinicId))

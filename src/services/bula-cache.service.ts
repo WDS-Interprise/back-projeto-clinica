@@ -57,7 +57,7 @@ export async function searchBulaCacheByQuery(
         return null
       }
     })
-    .filter((x): x is BulaSummary => Boolean(x))
+    .filter((x) => x !== null)
     .slice(0, limit)
 }
 

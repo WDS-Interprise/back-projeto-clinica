@@ -1,4 +1,4 @@
-import type { PixKeyType } from "@prisma/client"
+import type { PixKeyType, PlatformPayoutStatus } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
 import { CLINMAX_PAY_FEE_PERCENT, isAsaasConfigured } from "@/lib/env.js"
 import * as asaas from "@/lib/asaas.client.js"

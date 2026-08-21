@@ -696,7 +696,7 @@ export async function executeAiTool(
           lastError: null,
           ...(patientId ? { patientId } : {}),
         })
-        const proximos = result.horariosProximos.map((h) => h.inicio)
+        const proximos = (result.horariosProximos ?? []).map((h) => h.inicio)
         return JSON.stringify({
           ...result,
           jaTemConsulta: true,
@@ -888,7 +888,7 @@ export async function executeAiTool(
           excludeAppointmentId: sameDayExisting.id,
         })
         const proximos =
-          "horariosProximos" in preview ? preview.horariosProximos.map((h) => h.inicio) : []
+          "horariosProximos" in preview ? (preview.horariosProximos ?? []).map((h) => h.inicio) : []
         await saveChatAiContext(ctx.chatId, {
           intent: "BOOK_APPOINTMENT",
           existingAppointmentId: sameDayExisting.id,
@@ -909,7 +909,7 @@ export async function executeAiTool(
           horariosProximos: proximos,
           medico: doctorRow.name,
           horario: startTime,
-          data,
+          data: date,
           instrucao: preview.disponivel
             ? `Diga que o paciente já tem horário às ${sameDayExisting.startTime} com ${sameDayExisting.doctor.name} e pergunte se deseja remarcar para ${startTime}. Não diga falha temporária.`
             : `Diga que o paciente já tem horário às ${sameDayExisting.startTime}. O das ${startTime} não está livre. Ofereça: ${proximos.join(", ")}.`,
@@ -979,7 +979,7 @@ export async function executeAiTool(
         })
         const proximos =
           "horariosProximos" in availability
-            ? availability.horariosProximos.map((h) => h.inicio)
+            ? (availability.horariosProximos ?? []).map((h) => h.inicio)
             : []
         return JSON.stringify({
           sucesso: false,

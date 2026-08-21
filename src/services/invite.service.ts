@@ -479,7 +479,7 @@ export async function joinByInviteCode(userId: string, rawCode: string, profile?
     pendingApproval: true,
     clinicName: clinic.name,
     requestedRole: role,
-    roleLabel: ROLE_LABELS[role],
+    roleLabel: role ? ROLE_LABELS[role] : null,
     token,
     user: {
       id: user.id,

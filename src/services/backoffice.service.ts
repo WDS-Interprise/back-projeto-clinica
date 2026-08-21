@@ -379,8 +379,7 @@ export async function getMetrics() {
     }))
     .sort((a, b) => b.count - a.count)
 
-  type ActivityRow = { text: string; detail: string; time: string; at: Date }
-  const platformActivities: ActivityRow[] = [
+  const platformActivities = [
     ...recentClinicEvents.map((c) => ({
       text: "Nova clínica cadastrada",
       detail: c.name,
