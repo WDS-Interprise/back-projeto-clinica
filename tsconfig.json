@@ -13,9 +13,15 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["src/*"]
     }
+  },
+  "tsc-alias": {
+    "verbose": false,
+    "resolveFullPaths": true,
+    "resolveFullExtension": ".js"
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]

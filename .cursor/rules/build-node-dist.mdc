@@ -1,0 +1,15 @@
+---
+description: Build da API ClinMax. tsc-alias no dist. Produção node dist/index.js, sem tsx.
+globs: package.json,tsconfig.json,deploy/ecosystem.config.cjs,src/**/*.ts
+alwaysApply: true
+---
+
+# Build da API (ClinMax)
+
+`@/*` no source é ok. O `dist` **não** pode sair com `@/`.
+
+- `build`: `tsc --project tsconfig.json && tsc-alias -p tsconfig.json`
+- `tsc-alias` no `tsconfig`: `resolveFullPaths` + extensão `.js`
+- `start`: `node dist/index.js`
+- `deploy/ecosystem.config.cjs`: `script: "dist/index.js"`
+- Não “consertar” isso na infra. Não voltar `build` só com `tsc`.
