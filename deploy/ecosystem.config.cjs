@@ -5,6 +5,7 @@ module.exports = {
       name: "clinmax-api",
       cwd: process.env.CLINMAX_API_DIR || `${process.env.HOME}/clinmax-api`,
       script: "dist/index.js",
+      interpreter: "node",
       instances: 1,
       autorestart: true,
       max_memory_restart: "512M",

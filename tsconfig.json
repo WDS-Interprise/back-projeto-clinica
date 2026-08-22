@@ -21,7 +21,11 @@
   "tsc-alias": {
     "verbose": false,
     "resolveFullPaths": true,
-    "resolveFullExtension": ".js"
+    "resolveFullExtension": ".js",
+    "fileExtensions": {
+      "inputGlob": "{js,mjs}",
+      "outputCheck": ["js", "json", "mjs"]
+    }
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
