@@ -2,7 +2,7 @@ const fs = require("fs")
 const path = require("path")
 
 const distDir = path.join(__dirname, "..", "dist")
-const aliasRe = /from\s+["']@\//
+const aliasRe = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']@\//
 const hits = []
 
 function walk(dir) {
