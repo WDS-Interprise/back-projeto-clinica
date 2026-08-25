@@ -21,6 +21,8 @@ import {
 } from "@/lib/appointment-helpers.js"
 import { appointmentDoctorFilter, canViewAppointmentPatient } from "@/lib/auth-context.js"
 import { assertDoctorInClinic } from "@/lib/doctor-clinic.js"
+import { writeAuditLogInTx } from "@/lib/audit-log.js"
+import { cancelFromAppointment } from "@/services/encounter.service.js"
 import {
   assertAppointmentStatusTransition,
   clinicalStatusRequiresRecordsWrite,
@@ -369,6 +371,10 @@ export async function update(
       data: buildAppointmentUpdateData(data, existing),
     })
 
+    if (data.status === "CANCELLED" && existing.status !== "CANCELLED") {
+      await cancelFromAppointment(ctx, id, tx)
+    }
+
     if (data.status === "COMPLETED" && existing.status !== "COMPLETED") {
       const openEncounter = await tx.encounter.findFirst({
         where: { appointmentId: id, clinicId: ctx.clinicId, status: "IN_PROGRESS" },
@@ -377,7 +383,19 @@ export async function update(
       if (openEncounter) {
         await tx.encounter.update({
           where: { id: openEncounter.id },
-          data: { status: "COMPLETED", endedAt: now, lastSavedAt: now },
+          data: { status: "COMPLETED", endedAt: now, lastSavedAt: now, version: { increment: 1 } },
+        })
+        await writeAuditLogInTx(tx, {
+          clinicId: ctx.clinicId,
+          userId: ctx.userId,
+          actorRole: ctx.role,
+          module: "Atendimento",
+          action: "ENCOUNTER_COMPLETED",
+          entityType: "Encounter",
+          entityId: openEncounter.id,
+          description: "Atendimento clinico finalizado via agendamento",
+          metadata: { appointmentId: id },
+          required: true,
         })
       } else if (existing.patientId && ctx.permissions.includes("records:write")) {
         await tx.encounter.create({

@@ -44,6 +44,7 @@ enum EncounterStatus {
   NOT_STARTED
   IN_PROGRESS
   COMPLETED
+  CANCELLED
 }
 
 enum AppointmentType {
@@ -132,6 +133,7 @@ enum PrescriptionShareChannel {
 
 enum PrescriptionShareStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
 }
@@ -290,6 +292,8 @@ model Clinic {
   inventoryMovements   InventoryMovement[]
   tissGuides           TissGuide[]
   satisfactionSurveys  SatisfactionSurvey[]
+  outboxEvents         OutboxEvent[]
+  idempotencyRecords   IdempotencyRecord[]
 }
 
 model User {
@@ -747,6 +751,9 @@ model Encounter {
   cidCode               String?
   cidDescription        String?
   cidVersion            String?
+  version               Int             @default(1)
+  signatureMode         String?
+  signatureStatus       String?
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
   clinic                Clinic          @relation(fields: [clinicId], references: [id], onDelete: Cascade)
@@ -877,6 +884,7 @@ model AuditLog {
   id           String   @id @default(cuid())
   clinicId     String?
   userId       String?
+  actorRole    String?
   module       String
   action       String
   entityType   String?
@@ -885,10 +893,15 @@ model AuditLog {
   metadataJson String?
   ipAddress    String?
   userAgent    String?
+  requestId    String?
+  prevHash     String?
+  eventHash    String?
   createdAt    DateTime @default(now())
 
   @@index([clinicId, createdAt])
   @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
 }
 
 /// Cache de bulas completas obtidas de fontes oficiais (Anvisa Bulário / metadados Bulapi).
@@ -923,6 +936,8 @@ model Prescription {
   pdfPath          String?
   signedAt         DateTime?
   sentAt           DateTime?
+  snapshotJson     String?
+  contentHash      String?
   createdAt        DateTime                @default(now())
   updatedAt        DateTime                @updatedAt
   clinic           Clinic                  @relation(fields: [clinicId], references: [id], onDelete: Cascade)
@@ -1371,17 +1386,73 @@ model SatisfactionSurvey {
   @@index([appointmentId])
 }
 
-/// Stub para assinatura digital (fase futura).
+/// Evidencia de assinatura. STUB nunca deve ser status SIGNED.
 model PrescriptionSignature {
-  id              String       @id @default(cuid())
-  prescriptionId  String       @unique
-  provider        String?
-  certificateType String?
-  status          String       @default("PENDING")
-  signedPdfUrl    String?
-  signatureHash   String?
-  signedAt        DateTime?
-  errorMessage    String?
-  createdAt       DateTime     @default(now())
-  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  id                   String       @id @default(cuid())
+  clinicId             String?
+  prescriptionId       String       @unique
+  provider             String       @default("STUB")
+  providerTransactionId String?
+  certificateType      String?
+  signatureFormat      String?
+  signaturePolicy      String?
+  algorithm            String?
+  documentHash         String?
+  signedDocumentHash   String?
+  isCryptographic      Boolean      @default(false)
+  legalClass           String       @default("SIMULATION")
+  status               String       @default("PENDING")
+  signedPdfUrl         String?
+  signatureHash        String?
+  requestedAt          DateTime?
+  signedAt             DateTime?
+  validatedAt          DateTime?
+  failedAt             DateTime?
+  failureCode          String?
+  failureMessage       String?
+  errorMessage         String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  prescription         Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId, status])
+}
+
+/// Efeitos externos (WhatsApp, e-mail) fora da transacao clinica.
+model OutboxEvent {
+  id            String    @id @default(cuid())
+  clinicId      String
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payloadJson   String
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(8)
+  nextAttemptAt DateTime  @default(now())
+  lastError     String?
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  clinic        Clinic    @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([clinicId, aggregateType, aggregateId])
+}
+
+model IdempotencyRecord {
+  id           String   @id @default(cuid())
+  clinicId     String
+  actorUserId  String
+  operation    String
+  key          String
+  requestHash  String
+  responseJson String?
+  status       String   @default("STARTED")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  clinic       Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@unique([clinicId, actorUserId, operation, key])
+  @@index([clinicId, createdAt])
 }

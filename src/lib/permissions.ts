@@ -13,6 +13,7 @@ export type Permission =
   | "records:write"
   | "prescriptions:write"
   | "clinical_tools:view"
+  | "audit:view"
   | "users:manage"
   | "clinics:manage"
   | "invites:manage"
@@ -49,6 +50,7 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "finance:view",
     "finance:manage",
     "reports:view",
+    "audit:view",
   ],
   DOCTOR: [
     "agenda:view",

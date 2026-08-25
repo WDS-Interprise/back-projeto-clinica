@@ -21,5 +21,5 @@ export default async function (app: FastifyInstance) {
   app.get("/cid10/search", { preHandler: app.requirePermission(clinical, "records:write") }, searchCid10)
   app.get("/cid10/code/:code", { preHandler: app.requirePermission(clinical, "records:write") }, getCid10Code)
   app.get("/contacts", { preHandler: app.requirePermission("patients:view" as Permission) }, listContacts)
-  app.get("/logs", { preHandler: app.requirePermission("users:manage" as Permission) }, listLogs)
+  app.get("/logs", { preHandler: app.requirePermission("users:manage", "audit:view") }, listLogs)
 }

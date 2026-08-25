@@ -6,6 +6,7 @@ import * as ctrl from "@/controllers/prescriptions.controller.js"
 const createSchema = z.object({
   patientId: z.string().min(1),
   appointmentId: z.string().optional(),
+  encounterId: z.string().optional(),
   receiptType: z.enum(["SIMPLE", "SPECIAL"]).optional(),
   prescriptionDate: z.string().optional(),
   showDate: z.boolean().optional(),
@@ -65,11 +66,11 @@ const writePerm: Permission = "prescriptions:write"
 export default async function prescriptionsRoutes(app: FastifyInstance) {
   app.addHook("preHandler", app.auth)
 
-  app.get("/context/:routeId", ctrl.resolveContext)
-  app.get("/templates", ctrl.listTemplates)
-  app.get("/", ctrl.list)
-  app.get("/:id/pdf", ctrl.getPdf)
-  app.get("/:id", ctrl.getById)
+  app.get("/context/:routeId", { preHandler: app.requirePermission("records:view", "prescriptions:write") }, ctrl.resolveContext)
+  app.get("/templates", { preHandler: app.requirePermission("prescriptions:write") }, ctrl.listTemplates)
+  app.get("/", { preHandler: app.requirePermission("records:view", "prescriptions:write") }, ctrl.list)
+  app.get("/:id/pdf", { preHandler: app.requirePermission("records:view", "prescriptions:write") }, ctrl.getPdf)
+  app.get("/:id", { preHandler: app.requirePermission("records:view", "prescriptions:write") }, ctrl.getById)
 
   app.post("/", { preHandler: [app.requirePermission(writePerm), validate(createSchema)] }, ctrl.create)
   app.patch("/:id", { preHandler: [app.requirePermission(writePerm), validate(updateSchema)] }, ctrl.update)

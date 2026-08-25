@@ -33,6 +33,7 @@ export type PrescriptionPdfData = {
   receiptType: string
   issuedAt: Date
   signedAt?: Date | null
+  signatureKind?: "NONE" | "STUB" | "ICP_PADES"
   validateBaseUrl: string
   items: PrescriptionPdfItem[]
 }
@@ -223,11 +224,15 @@ function buildFooterDoctorLine(data: PrescriptionPdfData): string {
 }
 
 function buildSignatureBlock(data: PrescriptionPdfData): string {
-  if (data.signedAt) {
-    return `<p class="signature-status signed">Assinada Digitalmente</p>
-      <p class="signature-meta">Assinatura ICP-Brasil · ${formatDateTime(data.signedAt)}</p>`
+  if (data.signatureKind === "ICP_PADES") {
+    return `<p class="signature-status signed">Assinada digitalmente</p>
+      <p class="signature-meta">Assinatura PAdES ICP-Brasil · ${data.signedAt ? formatDateTime(data.signedAt) : "-"}</p>`
   }
-  return `<p class="signature-status unsigned">Não Assinada Digitalmente</p>`
+  if (data.signatureKind === "STUB") {
+    return `<p class="signature-status unsigned">Simulacao de assinatura</p>
+      <p class="signature-meta">Sem validade juridica. Nao e assinatura ICP-Brasil</p>`
+  }
+  return `<p class="signature-status unsigned">Nao assinada digitalmente</p>`
 }
 
 export async function buildPrescriptionHtml(data: PrescriptionPdfData): Promise<string> {

@@ -1,13 +1,32 @@
 import prisma from "@/lib/prisma.js"
 import { appointmentDoctorFilter } from "@/lib/auth-context.js"
 import { assertDoctorInClinic } from "@/lib/doctor-clinic.js"
-import { writeAuditLog } from "@/lib/audit-log.js"
+import { writeAuditLog, writeAuditLogInTx } from "@/lib/audit-log.js"
 import {
   assertAppointmentStatusTransition,
   clinicalStatusRequiresRecordsWrite,
 } from "@/lib/appointment-status.js"
+import {
+  assertEncounterCanAddendum,
+  assertEncounterCanEdit,
+  assertEncounterTransition,
+  encounterCompleteIsIdempotent,
+  type EncounterMachineStatus,
+} from "@/domain/state-machines/encounter.js"
+import {
+  assertCanWriteRecords,
+  assertOptimisticLock,
+  assertOwnsClinicalResource,
+} from "@/domain/authorization/clinical.js"
 import type { AuthContext } from "@/types/index.js"
 import type { EncounterStatus, Prisma } from "@prisma/client"
+
+export type EncounterSignatureMode = "NONE" | "LOCAL_CERT" | "CLOUD_CERT"
+
+export type CompleteEncounterInput = {
+  signatureMode?: EncounterSignatureMode
+  expectedVersion?: number
+}
 
 const encounterInclude = {
   patient: {
@@ -52,12 +71,6 @@ export type ClinicalEncounterInput = {
   cidVersion?: string | null
 }
 
-function assertCanWriteRecords(ctx: AuthContext) {
-  if (!ctx.permissions.includes("records:write")) {
-    throw new Error("PERMISSION_DENIED")
-  }
-}
-
 function serializeEncounter(row: any) {
   return {
     ...row,
@@ -78,17 +91,20 @@ async function audit(
   action: string,
   description: string,
   entityId: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  required = false
 ) {
   await writeAuditLog({
     clinicId: ctx.clinicId,
     userId: ctx.userId,
+    actorRole: ctx.role,
     module: "Atendimento",
     action,
     entityType: "Encounter",
     entityId,
     description,
     metadata,
+    required,
   })
 }
 
@@ -221,6 +237,7 @@ export async function startOrResumeFromAppointment(ctx: AuthContext, appointment
   if (ctx.role === "DOCTOR" && ctx.doctorId && appointment.doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
+  assertOwnsClinicalResource(ctx, { doctorId: appointment.doctorId })
 
   const existingOpen = await prisma.encounter.findFirst({
     where: { clinicId: ctx.clinicId, appointmentId, status: "IN_PROGRESS" },
@@ -266,6 +283,9 @@ export async function startOrResumeFromAppointment(ctx: AuthContext, appointment
         status: "IN_PROGRESS",
         startedAt,
         lastSavedAt: now,
+        version: 1,
+        signatureMode: null,
+        signatureStatus: "NONE",
         mainComplaint: legacy.mainComplaint,
         physicalExam: legacy.physicalExam,
         currentIllnessHistory: legacy.currentIllnessHistory,
@@ -288,33 +308,46 @@ export async function startOrResumeFromAppointment(ctx: AuthContext, appointment
       },
     })
 
-    return encounter
-  })
+    await writeAuditLogInTx(tx, {
+      clinicId: ctx.clinicId,
+      userId: ctx.userId,
+      actorRole: ctx.role,
+      module: "Atendimento",
+      action: "ENCOUNTER_STARTED",
+      entityType: "Encounter",
+      entityId: encounter.id,
+      description: "Atendimento clinico iniciado",
+      metadata: { appointmentId },
+      required: true,
+    })
 
-  await audit(ctx, "ENCOUNTER_STARTED", "Atendimento clínico iniciado", created.id, {
-    appointmentId,
+    return encounter
   })
 
   return { encounter: serializeEncounter(created), resumed: false as const }
 }
 
-export async function updateClinical(ctx: AuthContext, id: string, data: ClinicalEncounterInput) {
+export async function updateClinical(
+  ctx: AuthContext,
+  id: string,
+  data: ClinicalEncounterInput & { expectedVersion?: number }
+) {
   assertCanWriteRecords(ctx)
 
   const existing = await prisma.encounter.findFirst({
     where: { id, clinicId: ctx.clinicId },
   })
   if (!existing) throw new Error("NOT_FOUND")
+  assertOwnsClinicalResource(ctx, { doctorId: existing.doctorId })
   if (ctx.role === "DOCTOR" && ctx.doctorId && existing.doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
-  if (existing.status === "COMPLETED") {
-    throw new Error("ENCOUNTER_CLOSED")
-  }
+  assertEncounterCanEdit(existing.status as EncounterMachineStatus)
+  assertOptimisticLock(existing.version, data.expectedVersion)
 
   const now = new Date()
-  const updated = await prisma.encounter.update({
-    where: { id },
+  const updated = await prisma.encounter.updateMany({
+    where: { id, clinicId: ctx.clinicId, version: existing.version },
     data: {
       mainComplaint: data.mainComplaint === undefined ? undefined : data.mainComplaint,
       physicalExam: data.physicalExam === undefined ? undefined : data.physicalExam,
@@ -330,7 +363,21 @@ export async function updateClinical(ctx: AuthContext, id: string, data: Clinica
       cidDescription: data.cidDescription === undefined ? undefined : data.cidDescription,
       cidVersion: data.cidVersion === undefined ? undefined : data.cidVersion,
       lastSavedAt: now,
+      version: existing.version + 1,
     },
+  })
+
+  if (updated.count === 0) {
+    const { DomainError, DomainCodes } = await import("@/lib/domain-error.js")
+    throw new DomainError(
+      DomainCodes.VERSION_CONFLICT,
+      "O atendimento foi alterado em outra sessao. Recarregue e tente novamente",
+      409
+    )
+  }
+
+  const row = await prisma.encounter.findFirst({
+    where: { id, clinicId: ctx.clinicId },
     include: encounterInclude,
   })
 
@@ -343,45 +390,72 @@ export async function updateClinical(ctx: AuthContext, id: string, data: Clinica
     await audit(
       ctx,
       data.cidCode ? "CID_ADDED" : "CID_REMOVED",
-      data.cidCode ? `CID ${data.cidCode} vinculado` : "CID removido",
+      data.cidCode ? "CID vinculado" : "CID removido",
       id,
-      { cidCode: data.cidCode, cidDescription: data.cidDescription, cidVersion: data.cidVersion }
+      { cidCode: data.cidCode ?? undefined, cidVersion: data.cidVersion ?? undefined }
     )
-  } else {
-    await audit(ctx, "ENCOUNTER_UPDATED", "Evolução clínica atualizada", id)
   }
 
-  return serializeEncounter(updated)
+  return serializeEncounter(row)
 }
 
-export async function complete(ctx: AuthContext, id: string) {
+export async function complete(ctx: AuthContext, id: string, input: CompleteEncounterInput = {}) {
   assertCanWriteRecords(ctx)
 
   const existing = await prisma.encounter.findFirst({
     where: { id, clinicId: ctx.clinicId },
   })
   if (!existing) throw new Error("NOT_FOUND")
+  assertOwnsClinicalResource(ctx, { doctorId: existing.doctorId })
   if (ctx.role === "DOCTOR" && ctx.doctorId && existing.doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
-  if (existing.status === "COMPLETED") {
+  if (encounterCompleteIsIdempotent(existing.status as EncounterMachineStatus)) {
     return getById(ctx, id)
   }
 
+  assertEncounterTransition(existing.status as EncounterMachineStatus, "COMPLETED")
+  assertOptimisticLock(existing.version, input.expectedVersion)
+
+  const signatureMode: EncounterSignatureMode = input.signatureMode ?? "NONE"
+  if (signatureMode !== "NONE" && signatureMode !== "LOCAL_CERT" && signatureMode !== "CLOUD_CERT") {
+    const { DomainError } = await import("@/lib/domain-error.js")
+    throw new DomainError("SIGNATURE_UNSUPPORTED", "Modo de assinatura nao suportado", 400)
+  }
+
   const now = new Date()
+  const signatureStatus = signatureMode === "NONE" ? "NONE" : "REQUESTED"
+
   const updated = await prisma.$transaction(async (tx) => {
-    const encounter = await tx.encounter.update({
-      where: { id },
+    const locked = await tx.encounter.updateMany({
+      where: {
+        id,
+        clinicId: ctx.clinicId,
+        status: existing.status,
+        version: existing.version,
+      },
       data: {
         status: "COMPLETED" satisfies EncounterStatus,
         endedAt: now,
         lastSavedAt: now,
+        version: existing.version + 1,
+        signatureMode,
+        signatureStatus,
       },
-      include: encounterInclude,
     })
+    if (locked.count === 0) {
+      const { DomainError, DomainCodes } = await import("@/lib/domain-error.js")
+      throw new DomainError(
+        DomainCodes.VERSION_CONFLICT,
+        "O atendimento foi alterado em outra sessao. Recarregue e tente novamente",
+        409
+      )
+    }
 
     if (existing.appointmentId) {
-      const apt = await tx.appointment.findFirst({ where: { id: existing.appointmentId } })
+      const apt = await tx.appointment.findFirst({
+        where: { id: existing.appointmentId, clinicId: ctx.clinicId },
+      })
       if (apt) {
         assertAppointmentStatusTransition({
           from: apt.status,
@@ -395,11 +469,58 @@ export async function complete(ctx: AuthContext, id: string) {
       }
     }
 
-    return encounter
+    await writeAuditLogInTx(tx, {
+      clinicId: ctx.clinicId,
+      userId: ctx.userId,
+      actorRole: ctx.role,
+      module: "Atendimento",
+      action: "ENCOUNTER_COMPLETED",
+      entityType: "Encounter",
+      entityId: id,
+      description: "Atendimento clinico finalizado",
+      metadata: { appointmentId: existing.appointmentId ?? undefined, signatureMode, signatureStatus },
+      required: true,
+    })
+
+    return tx.encounter.findFirst({
+      where: { id, clinicId: ctx.clinicId },
+      include: encounterInclude,
+    })
   })
 
-  await audit(ctx, "ENCOUNTER_COMPLETED", "Atendimento clínico finalizado", id)
   return serializeEncounter(updated)
+}
+
+export async function cancelFromAppointment(ctx: AuthContext, appointmentId: string, tx?: Prisma.TransactionClient) {
+  const db = tx ?? prisma
+  const open = await db.encounter.findFirst({
+    where: { appointmentId, clinicId: ctx.clinicId, status: "IN_PROGRESS" },
+  })
+  if (!open) return null
+  assertEncounterTransition(open.status as EncounterMachineStatus, "CANCELLED")
+  const now = new Date()
+  await db.encounter.update({
+    where: { id: open.id },
+    data: {
+      status: "CANCELLED",
+      endedAt: now,
+      lastSavedAt: now,
+      version: open.version + 1,
+    },
+  })
+  await writeAuditLogInTx(db, {
+    clinicId: ctx.clinicId,
+    userId: ctx.userId,
+    actorRole: ctx.role,
+    module: "Atendimento",
+    action: "ENCOUNTER_CANCELLED",
+    entityType: "Encounter",
+    entityId: open.id,
+    description: "Atendimento clinico cancelado",
+    metadata: { appointmentId },
+    required: true,
+  })
+  return open.id
 }
 
 export async function addAddendum(
@@ -416,12 +537,11 @@ export async function addAddendum(
     where: { id, clinicId: ctx.clinicId },
   })
   if (!existing) throw new Error("NOT_FOUND")
+  assertOwnsClinicalResource(ctx, { doctorId: existing.doctorId })
   if (ctx.role === "DOCTOR" && ctx.doctorId && existing.doctorId !== ctx.doctorId) {
     throw new Error("DOCTOR_NOT_ALLOWED")
   }
-  if (existing.status !== "COMPLETED") {
-    throw new Error("ENCOUNTER_NOT_COMPLETED")
-  }
+  assertEncounterCanAddendum(existing.status as EncounterMachineStatus)
 
   await prisma.encounterAddendum.create({
     data: {
@@ -432,9 +552,9 @@ export async function addAddendum(
     },
   })
 
-  await audit(ctx, "ADDENDUM_CREATED", "Adendo clínico criado", id, {
-    reason: input.reason ?? null,
-  })
+  await audit(ctx, "ADDENDUM_CREATED", "Adendo clinico criado", id, {
+    hasAddendumReason: Boolean(input.reason?.trim()),
+  }, true)
 
   return getById(ctx, id)
 }
