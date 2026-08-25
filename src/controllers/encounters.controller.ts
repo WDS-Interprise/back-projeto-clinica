@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify"
 import * as encounterService from "@/services/encounter.service.js"
 import { suggestAttendanceDraftForEncounter } from "@/services/attendance-ai.service.js"
 import { buildAuthContext } from "@/lib/auth-context.js"
+import { domainErrorToHttp } from "@/lib/domain-error.js"
 import type { JwtPayload } from "@/types/index.js"
 
 async function ctxFromReq(req: FastifyRequest) {
@@ -10,28 +11,26 @@ async function ctxFromReq(req: FastifyRequest) {
 }
 
 function mapError(error: unknown, reply: FastifyReply) {
+  const domain = domainErrorToHttp(error)
+  if (domain) return reply.status(domain.status).send(domain.body)
   const message = error instanceof Error ? error.message : ""
-  if (message === "NOT_FOUND") return reply.status(404).send({ error: "Atendimento nao encontrado" })
-  if (message === "PERMISSION_DENIED") return reply.status(403).send({ error: "Permissao negada" })
+  if (message === "NOT_FOUND") {
+    return reply.status(404).send({ error: "Atendimento nao encontrado", code: "NOT_FOUND" })
+  }
+  if (message === "PERMISSION_DENIED") {
+    return reply.status(403).send({ error: "Permissao negada", code: "PERMISSION_DENIED" })
+  }
   if (message === "DOCTOR_NOT_ALLOWED") {
-    return reply.status(403).send({ error: "Profissional nao permitido" })
+    return reply.status(403).send({ error: "Profissional nao permitido", code: "DOCTOR_NOT_ALLOWED" })
+  }
+  if (message === "CLINIC_NOT_ALLOWED") {
+    return reply.status(403).send({ error: "Clinica nao autorizada", code: "CLINIC_NOT_ALLOWED" })
   }
   if (message === "INVALID_STATUS_TRANSITION") {
-    return reply.status(400).send({ error: "Transicao de status invalida" })
+    return reply.status(409).send({ error: "Transicao de status invalida", code: "INVALID_STATUS_TRANSITION" })
   }
   if (message === "PATIENT_REQUIRED") {
-    return reply.status(400).send({ error: "Agendamento sem paciente" })
-  }
-  if (message === "ENCOUNTER_CLOSED") {
-    return reply.status(400).send({
-      error: "Atendimento finalizado. Use um adendo para registrar informacoes novas",
-    })
-  }
-  if (message === "ENCOUNTER_NOT_COMPLETED") {
-    return reply.status(400).send({ error: "Adendo so e permitido apos finalizar o atendimento" })
-  }
-  if (message === "ADDENDUM_BODY_REQUIRED") {
-    return reply.status(400).send({ error: "Informe o texto do adendo" })
+    return reply.status(400).send({ error: "Agendamento sem paciente", code: "PATIENT_REQUIRED" })
   }
   if (message === "OPENROUTER_NOT_CONFIGURED") {
     return reply.status(503).send({ error: "IA nao configurada no servidor" })
@@ -85,7 +84,11 @@ export async function update(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
     const { id } = req.params as { id: string }
-    const encounter = await encounterService.updateClinical(ctx, id, req.body as any)
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const encounter = await encounterService.updateClinical(ctx, id, {
+      ...(body as any),
+      expectedVersion: typeof body.expectedVersion === "number" ? body.expectedVersion : undefined,
+    })
     return reply.send(encounter)
   } catch (error) {
     const mapped = mapError(error, reply)
@@ -99,7 +102,14 @@ export async function complete(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
     const { id } = req.params as { id: string }
-    const encounter = await encounterService.complete(ctx, id)
+    const body = (req.body ?? {}) as {
+      signatureMode?: "NONE" | "LOCAL_CERT" | "CLOUD_CERT"
+      expectedVersion?: number
+    }
+    const encounter = await encounterService.complete(ctx, id, {
+      signatureMode: body.signatureMode,
+      expectedVersion: body.expectedVersion,
+    })
     return reply.send(encounter)
   } catch (error) {
     const mapped = mapError(error, reply)

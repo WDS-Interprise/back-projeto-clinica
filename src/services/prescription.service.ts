@@ -8,6 +8,16 @@ import {
 } from "@/lib/prescription-pdf.js"
 import { htmlToPdfBuffer } from "@/lib/prescription-pdf-render.js"
 import { resolveDefaultConnectionId } from "@/services/whatsapp-messaging.service.js"
+import { hashCanonical } from "@/domain/hash/sha256.js"
+import { getSignatureProvider } from "@/domain/signature/stub-provider.js"
+import { classifySignatureLabel } from "@/domain/signature/types.js"
+import {
+  assertPrescriptionEditable,
+  prescriptionFinalizeIsIdempotent,
+} from "@/domain/state-machines/prescription.js"
+import { assertOwnsClinicalResource } from "@/domain/authorization/clinical.js"
+import { enqueueOutbox } from "@/lib/outbox.js"
+import { writeAuditLogInTx } from "@/lib/audit-log.js"
 import type { AuthContext } from "@/types/index.js"
 import type {
   CreatePrescriptionInput,
@@ -92,6 +102,31 @@ async function getPrescriptionOrThrow(ctx: AuthContext, id: string) {
   return rx
 }
 
+function buildPrescriptionSnapshot(rx: Awaited<ReturnType<typeof getPrescriptionOrThrow>>) {
+  return {
+    prescriptionId: rx.id,
+    clinicId: rx.clinicId,
+    patientId: rx.patientId,
+    professionalId: rx.professionalId,
+    receiptType: rx.receiptType,
+    prescriptionDate: rx.prescriptionDate.toISOString(),
+    showDate: rx.showDate,
+    notes: rx.notes,
+    items: rx.items.map((item) => ({
+      type: item.type,
+      name: item.name,
+      presentation: item.presentation,
+      dosage: item.dosage,
+      frequency: item.frequency,
+      duration: item.duration,
+      quantity: item.quantity,
+      instructions: item.instructions,
+      continuousUse: item.continuousUse,
+      sortOrder: item.sortOrder,
+    })),
+  }
+}
+
 export async function list(
   ctx: AuthContext,
   params: { patientId?: string; appointmentId?: string; status?: string; limit?: number }
@@ -143,7 +178,8 @@ export async function createDraft(ctx: AuthContext, input: CreatePrescriptionInp
 
 export async function update(ctx: AuthContext, id: string, input: UpdatePrescriptionInput) {
   const rx = await getPrescriptionOrThrow(ctx, id)
-  if (rx.status !== "DRAFT") throw new Error("NOT_EDITABLE")
+  assertOwnsClinicalResource(ctx, { professionalId: rx.professionalId })
+  assertPrescriptionEditable(rx.status)
 
   if (input.appointmentId !== undefined) {
     await assertAppointmentInClinic(ctx, input.appointmentId ?? undefined, rx.patientId)
@@ -168,7 +204,8 @@ export async function update(ctx: AuthContext, id: string, input: UpdatePrescrip
 
 export async function addItem(ctx: AuthContext, prescriptionId: string, input: PrescriptionItemInput) {
   const rx = await getPrescriptionOrThrow(ctx, prescriptionId)
-  if (rx.status !== "DRAFT") throw new Error("NOT_EDITABLE")
+  assertOwnsClinicalResource(ctx, { professionalId: rx.professionalId })
+  assertPrescriptionEditable(rx.status)
 
   const maxOrder = rx.items.reduce((m, i) => Math.max(m, i.sortOrder), -1)
 
@@ -194,7 +231,8 @@ export async function addItem(ctx: AuthContext, prescriptionId: string, input: P
 
 export async function removeItem(ctx: AuthContext, prescriptionId: string, itemId: string) {
   const rx = await getPrescriptionOrThrow(ctx, prescriptionId)
-  if (rx.status !== "DRAFT") throw new Error("NOT_EDITABLE")
+  assertOwnsClinicalResource(ctx, { professionalId: rx.professionalId })
+  assertPrescriptionEditable(rx.status)
 
   const item = await prisma.prescriptionItem.findFirst({
     where: { id: itemId, prescriptionId },
@@ -207,7 +245,9 @@ export async function removeItem(ctx: AuthContext, prescriptionId: string, itemI
 
 async function loadPdfContext(
   rx: Awaited<ReturnType<typeof getPrescriptionOrThrow>>,
-  overrides?: Partial<Pick<PrescriptionPdfData, "validationCode" | "accessCode" | "issuedAt" | "signedAt">>
+  overrides?: Partial<
+    Pick<PrescriptionPdfData, "validationCode" | "accessCode" | "issuedAt" | "signedAt" | "signatureKind">
+  >
 ): Promise<PrescriptionPdfData> {
   const clinic = await prisma.clinic.findUnique({ where: { id: rx.clinicId } })
   const doctor = await prisma.doctor.findFirst({
@@ -236,6 +276,11 @@ async function loadPdfContext(
     receiptType: rx.receiptType,
     issuedAt: overrides?.issuedAt ?? rx.updatedAt,
     signedAt: overrides?.signedAt !== undefined ? overrides.signedAt : rx.signedAt,
+    signatureKind: overrides?.signatureKind ?? (rx.signature?.isCryptographic && rx.signature.status === "SIGNED"
+      ? "ICP_PADES"
+      : rx.signature?.status === "SIMULATED"
+        ? "STUB"
+        : "NONE"),
     validateBaseUrl: PUBLIC_APP_URL,
     items: rx.items.map((i) => ({
       type: i.type,
@@ -253,9 +298,12 @@ async function loadPdfContext(
 
 function buildWhatsAppMessage(pdfData: PrescriptionPdfData): string {
   const dateStr = pdfData.prescriptionDate.toLocaleDateString("pt-BR")
-  const signLine = pdfData.signedAt
-    ? "Documento assinado digitalmente."
-    : "Documento emitido sem assinatura digital."
+  const signLine =
+    pdfData.signatureKind === "ICP_PADES"
+      ? "Documento com assinatura criptografica PAdES."
+      : pdfData.signatureKind === "STUB"
+        ? "Documento emitido com simulacao de assinatura. Sem validade juridica ICP-Brasil."
+        : "Documento emitido sem assinatura digital."
 
   return `Olá, ${pdfData.patientName}.
 
@@ -382,77 +430,226 @@ async function tryShareWhatsApp(
   }
 }
 
+export async function deliverQueuedPrescriptionShare(shareId: string) {
+  const share = await prisma.prescriptionShare.findUnique({
+    where: { id: shareId },
+  })
+  if (!share) throw new Error("SHARE_NOT_FOUND")
+  if (share.status === "SENT") return share
+  if (!share.recipient) {
+    return prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: { status: "FAILED", errorMessage: "Telefone do paciente nao informado" },
+    })
+  }
+
+  const rx = await prisma.prescription.findFirst({
+    where: { id: share.prescriptionId },
+    include: prescriptionInclude,
+  })
+  if (!rx) throw new Error("NOT_FOUND")
+
+  await prisma.prescriptionShare.update({
+    where: { id: shareId },
+    data: { status: "PROCESSING" },
+  })
+
+  const ctx = { clinicId: rx.clinicId } as AuthContext
+  const pdfData = await loadPdfContext(rx)
+  const pdfBuffer = await readPrescriptionPdfBuffer(rx)
+
+  const connectionId = await resolveDefaultConnectionId(rx.clinicId)
+  if (!connectionId) {
+    return prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: {
+        status: "FAILED",
+        errorMessage: "Nenhum WhatsApp conectado. Va em Configuracoes, WhatsApp e conecte uma sessao.",
+      },
+    })
+  }
+
+  try {
+    const { sendDocumentNow, sendMessageNow } = await import(
+      "@/services/whatsapp-messaging.service.js"
+    )
+    await sendMessageNow({
+      clinicId: rx.clinicId,
+      connectionId,
+      to: share.recipient,
+      body: buildWhatsAppMessage(pdfData),
+      appointmentId: rx.appointmentId,
+    })
+    await sendDocumentNow({
+      clinicId: rx.clinicId,
+      connectionId,
+      to: share.recipient,
+      buffer: pdfBuffer,
+      fileName: buildPrescriptionFilename(pdfData),
+      mimetype: "application/pdf",
+      caption: "Sua prescricao Clinmax",
+      appointmentId: rx.appointmentId,
+    })
+    const sent = await prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: { status: "SENT", sentAt: new Date(), errorMessage: null },
+    })
+    await prisma.prescription.update({
+      where: { id: rx.id },
+      data: { sentAt: new Date() },
+    })
+    void ctx
+    return sent
+  } catch (err) {
+    return prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: { status: "FAILED", errorMessage: whatsappShareErrorMessage(err) },
+    })
+  }
+}
+
 export async function finalize(
   ctx: AuthContext,
   id: string,
   options: FinalizePrescriptionInput = {}
 ) {
   const rx = await getPrescriptionOrThrow(ctx, id)
+  assertOwnsClinicalResource(ctx, { professionalId: rx.professionalId })
+  if (prescriptionFinalizeIsIdempotent(rx.status)) {
+    return getById(ctx, id)
+  }
   if (rx.status !== "DRAFT") throw new Error("ALREADY_FINALIZED")
   if (rx.items.length === 0) throw new Error("NO_ITEMS")
 
+  const snapshot = buildPrescriptionSnapshot(rx)
+  const contentHash = hashCanonical(snapshot)
   const validationCode = genValidationCode()
   const accessCode = genAccessCode()
-  const signedAt = options.signDigital ? new Date() : null
   const issuedAt = new Date()
+  const signatureKind = options.signDigital ? "STUB" : "NONE"
 
-  const { buffer: pdfBuffer, pdfData } = await generatePrescriptionPdfBuffer(rx, {
+  const { pdfData } = await generatePrescriptionPdfBuffer(rx, {
     validationCode,
     accessCode,
     issuedAt,
-    signedAt,
+    signedAt: null,
+    signatureKind,
   })
 
-  await prisma.prescription.update({
-    where: { id },
-    data: {
-      status: "FINALIZED",
-      validationCode,
-      accessCode,
-      pdfPath: null,
-      signedAt,
-      sentAt: null,
-    },
-    include: prescriptionInclude,
-  })
+  const phone =
+    options.sharePhone?.trim() ||
+    rx.patient.whatsapp?.trim() ||
+    rx.patient.phone?.trim() ||
+    ""
 
-  if (options.signDigital) {
-    await prisma.prescriptionSignature.upsert({
-      where: { prescriptionId: id },
-      create: { prescriptionId: id, provider: "STUB", certificateType: "A1", status: "PENDING" },
-      update: { status: "PENDING" },
+  await prisma.$transaction(async (tx) => {
+    await tx.prescription.update({
+      where: { id },
+      data: {
+        status: "FINALIZED",
+        validationCode,
+        accessCode,
+        pdfPath: null,
+        signedAt: null,
+        sentAt: null,
+        snapshotJson: JSON.stringify(snapshot),
+        contentHash,
+      },
     })
-  }
 
-  let whatsappSent = false
-  if (options.shareWhatsApp) {
-    const phone =
-      options.sharePhone?.trim() ||
-      rx.patient.whatsapp?.trim() ||
-      rx.patient.phone?.trim()
-    if (phone) {
-      const share = await tryShareWhatsApp(ctx, rx, phone, pdfData, pdfBuffer)
-      whatsappSent = share.status === "SENT"
-    } else {
-      await prisma.prescriptionShare.create({
+    if (options.signDigital) {
+      const provider = getSignatureProvider("STUB")
+      const result = await provider.createSignature({
+        clinicId: ctx.clinicId,
+        prescriptionId: id,
+        documentHash: contentHash,
+        requestedByUserId: ctx.userId,
+        mode: "STUB",
+      })
+      const label = classifySignatureLabel(result)
+      await tx.prescriptionSignature.upsert({
+        where: { prescriptionId: id },
+        create: {
+          clinicId: ctx.clinicId,
+          prescriptionId: id,
+          provider: result.provider,
+          certificateType: result.certificateType,
+          status: result.status,
+          isCryptographic: result.isCryptographic,
+          legalClass: result.legalClass,
+          signatureFormat: result.signatureFormat,
+          signaturePolicy: result.signaturePolicy,
+          documentHash: result.documentHash,
+          signedDocumentHash: result.signedDocumentHash,
+          failureCode: result.failureCode,
+          failureMessage: result.failureMessage,
+          requestedAt: issuedAt,
+          signedAt: null,
+        },
+        update: {
+          clinicId: ctx.clinicId,
+          provider: result.provider,
+          status: result.status,
+          isCryptographic: false,
+          legalClass: result.legalClass,
+          documentHash: result.documentHash,
+          signedAt: null,
+        },
+      })
+      void label
+    }
+
+    await writeAuditLogInTx(tx, {
+      clinicId: ctx.clinicId,
+      userId: ctx.userId,
+      actorRole: ctx.role,
+      module: "Prescricoes",
+      action: "PRESCRIPTION_FINALIZED",
+      entityType: "Prescription",
+      entityId: id,
+      description: "Prescricao finalizada",
+      metadata: {
+        itemCount: rx.items.length,
+        signatureMode: options.signDigital ? "STUB" : "NONE",
+      },
+      required: true,
+    })
+
+    if (options.shareWhatsApp) {
+      const share = await tx.prescriptionShare.create({
         data: {
           prescriptionId: id,
           channel: "WHATSAPP",
-          recipient: "",
-          status: "FAILED",
-          errorMessage: "Telefone do paciente não informado",
+          recipient: phone,
+          status: phone ? "PENDING" : "FAILED",
+          errorMessage: phone ? null : "Telefone do paciente nao informado",
         },
       })
+      if (phone) {
+        await enqueueOutbox(tx, {
+          clinicId: ctx.clinicId,
+          aggregateType: "Prescription",
+          aggregateId: id,
+          eventType: "PRESCRIPTION_SHARE_WHATSAPP",
+          payload: { shareId: share.id, phone },
+        })
+        await writeAuditLogInTx(tx, {
+          clinicId: ctx.clinicId,
+          userId: ctx.userId,
+          actorRole: ctx.role,
+          module: "Prescricoes",
+          action: "PRESCRIPTION_SHARE_REQUESTED",
+          entityType: "Prescription",
+          entityId: id,
+          description: "Compartilhamento WhatsApp enfileirado",
+          metadata: { shareId: share.id },
+          required: true,
+        })
+      }
     }
-  }
+  })
 
-  if (whatsappSent) {
-    await prisma.prescription.update({
-      where: { id },
-      data: { sentAt: new Date() },
-    })
-  }
-
+  void pdfData
   return getById(ctx, id)
 }
 
@@ -559,25 +756,45 @@ export async function validatePublic(code: string, accessCode?: string) {
       accessCode: true,
       prescriptionDate: true,
       showDate: true,
-      patient: { select: { name: true } },
+      receiptType: true,
+      contentHash: true,
+      signedAt: true,
       professional: { select: { name: true } },
-      items: { select: { name: true, type: true }, orderBy: { sortOrder: "asc" } },
+      signature: {
+        select: {
+          status: true,
+          isCryptographic: true,
+          legalClass: true,
+          provider: true,
+        },
+      },
+      items: { select: { type: true }, orderBy: { sortOrder: "asc" } },
     },
   })
   if (!rx) return { valid: false as const, reason: "NOT_FOUND" }
   if (accessCode && rx.accessCode !== accessCode) {
     return { valid: false as const, reason: "INVALID_ACCESS_CODE" }
   }
+
+  const cryptoOk = Boolean(
+    rx.signature?.isCryptographic && rx.signature.status === "SIGNED" && rx.signature.provider !== "STUB"
+  )
+  const simulated = rx.signature?.status === "SIMULATED" || rx.signature?.legalClass === "SIMULATION"
+
   return {
     valid: true as const,
-    prescription: {
-      id: rx.id,
-      validationCode: rx.validationCode,
+    document: {
+      located: true,
+      documentType: rx.receiptType,
       date: rx.showDate ? rx.prescriptionDate : null,
-      patientName: rx.patient.name,
       professionalName: rx.professional.name,
       itemCount: rx.items.length,
-      items: rx.items.map((i) => ({ name: i.name, type: i.type })),
+      integrity: rx.contentHash ? "HASH_PRESENT" : "HASH_ABSENT",
+      signature: cryptoOk
+        ? { status: "VALID_CRYPTOGRAPHIC", icpBrasil: false, note: "Provedor criptografico ainda nao integrado" }
+        : simulated
+          ? { status: "SIMULATED", icpBrasil: false, note: "Simulacao. Nao e assinatura ICP-Brasil" }
+          : { status: "UNSIGNED", icpBrasil: false, note: "Documento sem assinatura criptografica" },
     },
   }
 }

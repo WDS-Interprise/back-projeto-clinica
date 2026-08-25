@@ -6,7 +6,6 @@ import * as contactsService from "@/services/contacts.service.js"
 import * as logsService from "@/services/logs.service.js"
 import { buildAuthContext } from "@/lib/auth-context.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
-import { hasPermission } from "@/lib/permissions.js"
 
 async function ctxFromReq(req: FastifyRequest) {
   const payload = req.user as { userId: string; clinicId?: string }
@@ -137,8 +136,8 @@ export async function listContacts(req: FastifyRequest, reply: FastifyReply) {
 export async function listLogs(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromReq(req)
-    if (!hasPermission(ctx.role, "users:manage")) {
-      return reply.status(403).send({ error: "Acesso negado aos logs do sistema" })
+    if (!ctx.permissions.includes("users:manage") && !ctx.permissions.includes("audit:view")) {
+      return reply.status(403).send({ error: "Acesso negado aos logs do sistema", code: "PERMISSION_DENIED" })
     }
     const q = req.query as { search?: string; module?: string; page?: string }
     const data = await logsService.listLogs(ctx, {

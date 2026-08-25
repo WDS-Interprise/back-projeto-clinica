@@ -51,6 +51,7 @@ export const PERMISSION_GROUPS: Array<{
       { permission: "records:write", label: "Editar prontuário" },
       { permission: "prescriptions:write", label: "Prescrever" },
       { permission: "clinical_tools:view", label: "Bulas e CID" },
+      { permission: "audit:view", label: "Ver trilha de auditoria clinica" },
     ],
   },
   {

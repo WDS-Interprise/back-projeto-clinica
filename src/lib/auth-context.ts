@@ -27,12 +27,20 @@ export async function buildAuthContext(userId: string, clinicId?: string): Promi
   if (!user) throw new Error("USER_NOT_FOUND")
 
   let resolvedClinicId = clinicId
-  if (!resolvedClinicId) {
+  if (!resolvedClinicId || resolvedClinicId === "none") {
     const link = await prisma.userClinic.findFirst({
       where: { userId, active: true },
       select: { clinicId: true },
     })
     resolvedClinicId = link?.clinicId ?? ""
+  } else {
+    const membership = await prisma.userClinic.findFirst({
+      where: { userId, clinicId: resolvedClinicId, active: true },
+      select: { clinicId: true },
+    })
+    if (!membership) {
+      throw new Error("CLINIC_NOT_ALLOWED")
+    }
   }
 
   const hasClinicalProfile = Boolean(user.doctorProfile?.id)

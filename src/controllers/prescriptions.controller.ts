@@ -1,7 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify"
 import { ctxFromRequest } from "@/lib/auth-context.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
+import { domainErrorToHttp } from "@/lib/domain-error.js"
 import * as prescriptionService from "@/services/prescription.service.js"
+import { processClinicalOutbox } from "@/services/outbox.service.js"
 
 function auditFromReq(
   req: FastifyRequest,
@@ -147,24 +149,28 @@ export async function finalize(req: FastifyRequest, reply: FastifyReply) {
   try {
     const ctx = await ctxFromRequest(req)
     const { id } = req.params as { id: string }
-    const rx = await prescriptionService.finalize(ctx, id, req.body as Parameters<typeof prescriptionService.finalize>[2])
-    await auditFromReq(req, {
-      action: "FINALIZAR",
-      description: `Prescrição finalizada (${rx.validationCode})`,
-      entityId: rx.id,
-      metadata: { shareWhatsApp: Boolean((req.body as { shareWhatsApp?: boolean })?.shareWhatsApp) },
-    })
+    const rx = await prescriptionService.finalize(
+      ctx,
+      id,
+      req.body as Parameters<typeof prescriptionService.finalize>[2]
+    )
+    void processClinicalOutbox(10)
     return reply.send(rx)
   } catch (error: unknown) {
+    const domain = domainErrorToHttp(error)
+    if (domain) return reply.status(domain.status).send(domain.body)
     if (error instanceof Error) {
       if (error.message === "NOT_FOUND") {
-        return reply.status(404).send({ error: "Prescrição não encontrada" })
+        return reply.status(404).send({ error: "Prescrição não encontrada", code: "NOT_FOUND" })
       }
       if (error.message === "NO_ITEMS") {
-        return reply.status(400).send({ error: "Adicione ao menos um item antes de finalizar" })
+        return reply.status(400).send({ error: "Adicione ao menos um item antes de finalizar", code: "NO_ITEMS" })
       }
       if (error.message === "ALREADY_FINALIZED") {
-        return reply.status(400).send({ error: "Prescrição já finalizada" })
+        return reply.status(409).send({
+          error: "Prescrição já finalizada",
+          code: "PRESCRIPTION_ALREADY_FINALIZED",
+        })
       }
     }
     req.log.error(error)

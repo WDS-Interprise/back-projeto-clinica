@@ -1,5 +1,6 @@
 import { processPendingOutbox } from "@/services/whatsapp-messaging.service.js"
 import { runAutomaticReminders } from "@/services/whatsapp-reminder.service.js"
+import { processClinicalOutbox } from "@/services/outbox.service.js"
 
 const INTERVAL_MS = 3 * 60 * 1000
 
@@ -11,6 +12,7 @@ export function startWhatsappScheduler() {
   const tick = async () => {
     try {
       await processPendingOutbox(30)
+      await processClinicalOutbox(20)
       await runAutomaticReminders()
     } catch (err) {
       console.error("[WhatsApp scheduler]", err)

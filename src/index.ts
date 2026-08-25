@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto"
 import Fastify from "fastify"
 import cors from "@fastify/cors"
 import jwt from "jsonwebtoken"
@@ -47,12 +48,20 @@ import { resolveCorsOrigins } from "@/lib/cors.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
 import { resumeWhatsappSessionsOnBoot } from "@/services/whatsapp.service.js"
 
-const app = Fastify({ logger: true })
+const app = Fastify({
+  logger: true,
+  genReqId: (req) => {
+    const header = req.headers["x-request-id"]
+    if (typeof header === "string" && header.trim()) return header.trim()
+    return randomUUID()
+  },
+  requestIdHeader: "x-request-id",
+})
 
 await app.register(cors, {
   origin: resolveCorsOrigins(),
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Authorization", "Content-Type", "Accept"],
+  allowedHeaders: ["Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Request-Id"],
   maxAge: 86_400,
 })
 
@@ -126,6 +135,15 @@ app.decorate("requirePlanFeature", (...features: PlanFeature[]) => {
 
 app.get("/api/health", async () => {
   return { status: "ok", timestamp: new Date().toISOString() }
+})
+
+app.get("/api/ready", async (_req, reply) => {
+  try {
+    await (await import("@/lib/prisma.js")).default.$queryRaw`SELECT 1`
+    return { status: "ready", db: true, timestamp: new Date().toISOString() }
+  } catch {
+    return reply.status(503).send({ status: "not_ready", db: false })
+  }
 })
 
 await app.register(authRoutes, { prefix: "/api/auth" })
