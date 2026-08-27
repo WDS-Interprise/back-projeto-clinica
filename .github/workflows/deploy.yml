@@ -25,10 +25,37 @@ env:
   DEPLOY_TMP: /tmp/clinmax-api-deploy
   VPS_APP_DIR: ~/clinmax-api
   NGINX_SITE: clinmax-api
+  NODE_VERSION: "24.15.0"
+  CLINMAX_PORT: "3550"
   SSH_PORT: ${{ secrets.PORT || '22' }}
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Executar testes
+        run: npm test
+
+      - name: Validar build compilado
+        run: npm run build
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
     environment: Production
 
@@ -89,104 +116,211 @@ jobs:
           retry_wait_seconds: 45
           command: |
             ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i ~/.ssh/deploy_key -p ${{ env.SSH_PORT }} \
-              ${{ secrets.USERNAME }}@${{ secrets.HOST }} "
-              set -e
-              APP_DIR=\${HOME}/clinmax-api
-              TMP=${{ env.DEPLOY_TMP }}
-              rm -rf \"\$APP_DIR\"/*
-              tar -xzf \"\$TMP/repo.tar.gz\" -C \"\$APP_DIR\"
-              cp \"\$TMP/.env.deploy\" \"\$APP_DIR/.env\"
-              cp \"\$TMP/nginx-api.conf\" \"\$APP_DIR/deploy/nginx-api.conf\"
-              cp \"\$TMP/ecosystem.config.cjs\" \"\$APP_DIR/deploy/ecosystem.config.cjs\"
-              cp \"\$TMP/docker-compose.prod.yml\" \"\$APP_DIR/deploy/docker-compose.prod.yml\"
-              cd \"\$APP_DIR\"
-              set -a
-              . ./.env
-              set +a
-              APP_PORT=\${PORT:-3550}
-              if echo \"\${DATABASE_URL:-}\" | grep -Eq '^file:'; then
-                echo 'DATABASE_URL de producao aponta para SQLite (file:...).'
-                echo 'Ajuste DOTENV_FILE no GitHub Environment Production para Postgres (127.0.0.1:5433).'
+              ${{ secrets.USERNAME }}@${{ secrets.HOST }} \
+              "NODE_VERSION='${{ env.NODE_VERSION }}' CLINMAX_PORT='${{ env.CLINMAX_PORT }}' \
+              DEPLOY_TMP='${{ env.DEPLOY_TMP }}' NGINX_SITE='${{ env.NGINX_SITE }}' bash -s" <<'CLINMAX_DEPLOY'
+            set -eo pipefail
+
+            APP_DIR="${VPS_APP_DIR:-${HOME}/clinmax-api}"
+            TMP="${DEPLOY_TMP:-/tmp/clinmax-api-deploy}"
+            NODE_VERSION="${NODE_VERSION:?NODE_VERSION nao informado}"
+            EXPECTED_APP_PORT="${CLINMAX_PORT:-3550}"
+            SITE="${NGINX_SITE:-clinmax-api}"
+            NVM_DIR="${HOME}/.nvm"
+            export NVM_DIR
+
+            for artifact in repo.tar.gz .env.deploy nginx-api.conf ecosystem.config.cjs docker-compose.prod.yml; do
+              if [ ! -s "${TMP}/${artifact}" ]; then
+                echo "Artefato de deploy ausente: ${TMP}/${artifact}"
                 exit 1
               fi
-              if command -v docker >/dev/null 2>&1; then
-                if docker ps -a --format '{{.Names}}' | grep -qx clinmax_postgres; then
-                  docker start clinmax_postgres 2>/dev/null || true
-                else
-                  docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d || echo 'Aviso: postgres docker nao subiu — confira DATABASE_URL (.env)'
-                fi
-              fi
-              export PATH=\"\$HOME/.local/bin:\$HOME/.local/share/fnm/current/bin:\$HOME/.fnm/current/bin:/usr/local/bin:/usr/bin:\$PATH\"
-              if [ -x \"\$HOME/.local/share/fnm/fnm\" ]; then
-                eval \"\$(\$HOME/.local/share/fnm/fnm env)\"
-              elif command -v fnm >/dev/null 2>&1; then
-                eval \"\$(fnm env)\"
-              elif [ -s \"\$HOME/.nvm/nvm.sh\" ]; then
-                . \"\$HOME/.nvm/nvm.sh\"
-              fi
-              if ! command -v node >/dev/null 2>&1; then
-                echo 'Node.js nao encontrado na VPS. Rode uma vez via SSH:'
-                echo '  curl -fsSL https://fnm.vercel.app/install | bash && eval \"\$(fnm env)\" && fnm install 20 && npm i -g pm2'
+            done
+
+            if [ ! -s "${NVM_DIR}/nvm.sh" ]; then
+              echo "nvm nao encontrado na VPS. Siga deploy/README.md antes de publicar."
+              exit 1
+            fi
+
+            . "${NVM_DIR}/nvm.sh"
+            if ! nvm use "${NODE_VERSION}" >/dev/null; then
+              echo "Node ${NODE_VERSION} nao esta instalado no nvm. Siga deploy/README.md."
+              exit 1
+            fi
+
+            NODE_BIN="$(node -p 'process.execPath')"
+            ACTIVE_NODE_VERSION="$("${NODE_BIN}" -p 'process.versions.node')"
+            if [ "${ACTIVE_NODE_VERSION}" != "${NODE_VERSION}" ]; then
+              echo "Versao incorreta do Node. Esperada ${NODE_VERSION}, recebida ${ACTIVE_NODE_VERSION}."
+              exit 1
+            fi
+
+            case "${NODE_BIN}" in
+              "${HOME}"/.nvm/versions/node/*/bin/node) ;;
+              *)
+                echo "Node temporario ou fora do nvm: ${NODE_BIN}"
                 exit 1
-              fi
-              node -v
-              # Mesmo com NODE_ENV=production no .env, precisamos dos @types para o tsc.
-              NODE_ENV=development npm ci --include=dev
-              npm run build
-              npx prisma generate
-              npx prisma migrate deploy || npx prisma db push
-              npm run db:seed || true
-              npm prune --omit=dev
-              export NODE_ENV=production
-              SITE=${{ env.NGINX_SITE }}
-              if ! sudo grep -q 'listen.*443' /etc/nginx/sites-available/\$SITE 2>/dev/null; then
-                sudo cp deploy/nginx-api.conf /etc/nginx/sites-available/\$SITE
-                sudo ln -sf /etc/nginx/sites-available/\$SITE /etc/nginx/sites-enabled/\$SITE
-                echo 'Nginx '"\$SITE"' instalado HTTP - certbot --nginx -d api.clinmax.com.br'
+                ;;
+            esac
+
+            NODE_BIN_DIR="$(dirname "${NODE_BIN}")"
+            NPM_BIN="${NODE_BIN_DIR}/npm"
+            NPX_BIN="${NODE_BIN_DIR}/npx"
+
+            if [ ! -x "${NPM_BIN}" ] || [ ! -x "${NPX_BIN}" ]; then
+              echo "npm ou npx nao encontrado junto ao Node permanente: ${NODE_BIN_DIR}"
+              exit 1
+            fi
+
+            PM2_CLI="$("${NPM_BIN}" root -g)/pm2/bin/pm2"
+            EXPECTED_PM2_CLI="${HOME}/.nvm/versions/node/${NODE_VERSION}/lib/node_modules/pm2/bin/pm2"
+            if [ ! -f "${PM2_CLI}" ] || [ "${PM2_CLI}" != "${EXPECTED_PM2_CLI}" ]; then
+              echo "PM2 permanente nao encontrado em ${EXPECTED_PM2_CLI}. Siga deploy/README.md."
+              exit 1
+            fi
+
+            PM2_SERVICE="pm2-$(id -un).service"
+            PM2_SERVICE_FILE="${TMP}/${PM2_SERVICE}.txt"
+            if ! systemctl cat "${PM2_SERVICE}" > "${PM2_SERVICE_FILE}" 2>/dev/null; then
+              echo "Servico ${PM2_SERVICE} nao encontrado. Siga deploy/README.md."
+              exit 1
+            fi
+            if grep -Eq 'fnm_multishells|/run/user/|/\.fnm/|/\.local/share/fnm' "${PM2_SERVICE_FILE}"; then
+              echo "Servico ${PM2_SERVICE} ainda aponta para o fnm. Siga deploy/README.md."
+              exit 1
+            fi
+            if ! grep -Fq "${HOME}/.nvm/versions/node/${NODE_VERSION}" "${PM2_SERVICE_FILE}"; then
+              echo "Servico ${PM2_SERVICE} nao aponta para o Node ${NODE_VERSION} do nvm."
+              echo "Regere o servico conforme deploy/README.md."
+              exit 1
+            fi
+            if ! systemctl is-enabled --quiet "${PM2_SERVICE}"; then
+              echo "Servico ${PM2_SERVICE} nao esta habilitado no boot."
+              exit 1
+            fi
+            if ! systemctl is-active --quiet "${PM2_SERVICE}"; then
+              echo "Servico ${PM2_SERVICE} nao esta ativo."
+              exit 1
+            fi
+
+            run_pm2() {
+              "${NODE_BIN}" "${PM2_CLI}" "$@"
+            }
+
+            set -a
+            . "${TMP}/.env.deploy"
+            set +a
+
+            APP_PORT="${PORT:-}"
+            if [ "${APP_PORT}" != "${EXPECTED_APP_PORT}" ]; then
+              echo "PORT precisa ser ${EXPECTED_APP_PORT} para corresponder ao Nginx. Recebida: ${APP_PORT:-vazia}."
+              exit 1
+            fi
+            if [ -z "${DATABASE_URL:-}" ]; then
+              echo "DATABASE_URL de producao esta vazia."
+              exit 1
+            fi
+            if echo "${DATABASE_URL}" | grep -Eq '^file:'; then
+              echo "DATABASE_URL de producao aponta para SQLite (file:...)."
+              echo "Ajuste DOTENV_FILE no GitHub Environment Production para Postgres (127.0.0.1:5433)."
+              exit 1
+            fi
+
+            rm -rf "${APP_DIR}"/*
+            tar -xzf "${TMP}/repo.tar.gz" -C "${APP_DIR}"
+            cp "${TMP}/.env.deploy" "${APP_DIR}/.env"
+            cp "${TMP}/nginx-api.conf" "${APP_DIR}/deploy/nginx-api.conf"
+            cp "${TMP}/ecosystem.config.cjs" "${APP_DIR}/deploy/ecosystem.config.cjs"
+            cp "${TMP}/docker-compose.prod.yml" "${APP_DIR}/deploy/docker-compose.prod.yml"
+            cd "${APP_DIR}"
+
+            if command -v docker >/dev/null 2>&1; then
+              if docker ps -a --format '{{.Names}}' | grep -qx clinmax_postgres; then
+                docker start clinmax_postgres 2>/dev/null || true
               else
-                echo 'Nginx '"\$SITE"' ja tem SSL 443 - mantendo config'
+                docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d ||
+                  echo "Aviso: postgres docker nao subiu. Confira DATABASE_URL no .env."
               fi
-              sudo nginx -t
-              sudo systemctl reload nginx
-              if command -v pm2 >/dev/null 2>&1; then
-                CLINMAX_API_DIR=\"\$APP_DIR\" pm2 startOrReload deploy/ecosystem.config.cjs --update-env
-                pm2 save
-              else
-                echo 'PM2 não instalado — instale: npm i -g pm2'
-                exit 1
+            fi
+
+            "${NODE_BIN}" -v
+            NODE_ENV=development "${NPM_BIN}" ci --include=dev
+            "${NPM_BIN}" run build
+            "${NPX_BIN}" prisma generate
+            "${NPX_BIN}" prisma migrate deploy || "${NPX_BIN}" prisma db push
+            "${NPM_BIN}" run db:seed || true
+            "${NPM_BIN}" prune --omit=dev
+
+            export NODE_ENV=production
+            export CLINMAX_NODE_BIN="${NODE_BIN}"
+            export CLINMAX_API_DIR="${APP_DIR}"
+            export NO_COLOR=1
+
+            if ! sudo grep -q 'listen.*443' "/etc/nginx/sites-available/${SITE}" 2>/dev/null; then
+              sudo cp deploy/nginx-api.conf "/etc/nginx/sites-available/${SITE}"
+              sudo ln -sf "/etc/nginx/sites-available/${SITE}" "/etc/nginx/sites-enabled/${SITE}"
+              echo "Nginx ${SITE} instalado em HTTP. Rode certbot --nginx -d api.clinmax.com.br."
+            else
+              echo "Nginx ${SITE} ja tem SSL 443. Configuracao existente mantida."
+            fi
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+            show_diagnostics() {
+              curl -s -i "http://127.0.0.1:${APP_PORT}/api/health" || true
+              curl -s -i "http://127.0.0.1:${APP_PORT}/api/ready" || true
+              ss -tlnp | grep ":${APP_PORT}" || true
+              run_pm2 describe clinmax-api || true
+              run_pm2 logs clinmax-api --lines 80 --nostream || true
+            }
+
+            run_pm2 startOrReload deploy/ecosystem.config.cjs --update-env
+            run_pm2 reset clinmax-api
+
+            HEALTH_FILE="${TMP}/clinmax-health.json"
+            READY_FILE="${TMP}/clinmax-ready.json"
+            ok=0
+            for _attempt in $(seq 1 30); do
+              code_health="$(curl -sS -o "${HEALTH_FILE}" -w '%{http_code}' \
+                "http://127.0.0.1:${APP_PORT}/api/health" || true)"
+              code_ready="$(curl -sS -o "${READY_FILE}" -w '%{http_code}' \
+                "http://127.0.0.1:${APP_PORT}/api/ready" || true)"
+
+              if [ "${code_health}" = "200" ] &&
+                [ "${code_ready}" = "200" ] &&
+                grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "${HEALTH_FILE}" &&
+                grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "${READY_FILE}" &&
+                grep -Eq '"db"[[:space:]]*:[[:space:]]*true' "${READY_FILE}"; then
+                ok=1
+                break
               fi
-              ok=0
-              for i in \$(seq 1 30); do
-                code_direct=\$(curl -s -o /tmp/clinmax-health.json -w '%{http_code}' \"http://127.0.0.1:\${APP_PORT}/api/health\" || true)
-                if [ \"\$code_direct\" = \"200\" ]; then
-                  ok=1
-                  break
-                fi
-                # API viva também pode responder 404 em "/" (normal no Fastify sem rota raiz).
-                code_root=\$(curl -s -o /tmp/clinmax-root.json -w '%{http_code}' \"http://127.0.0.1:\${APP_PORT}/\" || true)
-                if [ \"\$code_root\" = \"200\" ] || [ \"\$code_root\" = \"404\" ]; then
-                  ok=1
-                  break
-                fi
-                code_nginx=\$(curl -s -o /tmp/clinmax-health-nginx.json -w '%{http_code}' -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true)
-                if [ \"\$code_nginx\" = \"200\" ] || [ \"\$code_nginx\" = \"301\" ] || [ \"\$code_nginx\" = \"302\" ] || [ \"\$code_nginx\" = \"307\" ] || [ \"\$code_nginx\" = \"308\" ]; then
-                  ok=1
-                  break
-                fi
-                sleep 2
-              done
-              if [ \"\$ok\" -ne 1 ]; then
-                echo \"Healthcheck falhou na porta \${APP_PORT}\"
-                echo \"Health direct code: \${code_direct:-n/a}\"
-                echo \"Root direct code: \${code_root:-n/a}\"
-                echo \"Health nginx code: \${code_nginx:-n/a}\"
-                curl -s -i \"http://127.0.0.1:\${APP_PORT}/api/health\" || true
-                curl -s -i \"http://127.0.0.1:\${APP_PORT}/\" || true
-                curl -s -i -H 'Host: api.clinmax.com.br' \"http://127.0.0.1/api/health\" || true
-                pm2 describe clinmax-api || true
-                pm2 logs clinmax-api --lines 80 --nostream || true
-                exit 1
-              fi
-              rm -rf \"\$TMP\"
-              echo 'ClinMax API deploy OK'
-            "
+              sleep 2
+            done
+
+            if [ "${ok}" -ne 1 ]; then
+              echo "Healthcheck ou readiness falhou na porta ${APP_PORT}."
+              echo "Health HTTP: ${code_health:-n/a}"
+              echo "Ready HTTP: ${code_ready:-n/a}"
+              show_diagnostics
+              exit 1
+            fi
+
+            sleep 5
+            run_pm2 jlist > "${TMP}/pm2-runtime.json"
+            if ! "${NODE_BIN}" scripts/validate-pm2-registration.cjs \
+              "${TMP}/pm2-runtime.json" "${NODE_BIN}" "${APP_DIR}" runtime; then
+              show_diagnostics
+              exit 1
+            fi
+
+            run_pm2 save
+            PM2_DUMP="${PM2_HOME:-${HOME}/.pm2}/dump.pm2"
+            if [ ! -s "${PM2_DUMP}" ]; then
+              echo "Dump do PM2 nao foi criado em ${PM2_DUMP}."
+              exit 1
+            fi
+            "${NODE_BIN}" scripts/validate-pm2-registration.cjs \
+              "${PM2_DUMP}" "${NODE_BIN}" "${APP_DIR}" saved
+
+            rm -rf "${TMP}"
+            echo "ClinMax API deploy OK"
+            CLINMAX_DEPLOY
