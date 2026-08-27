@@ -45,7 +45,7 @@ npm install -g pm2
 
 PM2_CLI="$(npm root -g)/pm2/bin/pm2"
 test "$PM2_CLI" = \
-  "$HOME/.nvm/versions/node/$NODE_VERSION/lib/node_modules/pm2/bin/pm2"
+  "$(dirname "$(dirname "$NODE_BIN")")/lib/node_modules/pm2/bin/pm2"
 
 pm2_nvm() {
   "$NODE_BIN" "$PM2_CLI" "$@"
