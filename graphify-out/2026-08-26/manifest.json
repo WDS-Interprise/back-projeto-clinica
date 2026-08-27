@@ -1260,9 +1260,9 @@
     "semantic_hash": ""
   },
   ".github/workflows/deploy.yml": {
-    "mtime": 1787794891.7274861,
-    "seen": 1787795025.7003567,
-    "ast_hash": "2a47acbc2ae9d81776bc279892e1e2fe",
+    "mtime": 1787776621.0165682,
+    "seen": 1787776894.9767709,
+    "ast_hash": "33a94424fe5b82973f62d41c4b64a627",
     "semantic_hash": ""
   },
   ".github/workflows/merge-develop-to-main.yml": {
@@ -1523,6 +1523,12 @@
     "ast_hash": "d6e59034b0dc8de0a8798021142d664f",
     "semantic_hash": ""
   },
+  "deploy/deploy-vps.sh": {
+    "mtime": 1787776847.3955877,
+    "seen": 1787776894.9209924,
+    "ast_hash": "7ae7ae591a01124e77dab0e1bff8f6c4",
+    "semantic_hash": ""
+  },
   "scripts/permanent-node.cjs": {
     "mtime": 1787776296.193534,
     "seen": 1787776894.9248872,
@@ -1530,9 +1536,9 @@
     "semantic_hash": ""
   },
   "deploy/README.md": {
-    "mtime": 1787794905.6655738,
-    "seen": 1787795025.70082,
-    "ast_hash": "2c3273b600d798b5172fdfd847890c60",
+    "mtime": 1787776731.4741373,
+    "seen": 1787776894.9773424,
+    "ast_hash": "10f9b319feca7819b5240ebfdabfd76a",
     "semantic_hash": ""
   }
 }

@@ -1,6 +1,6 @@
 ---
 description: Build da API ClinMax. tsc-alias no dist. Produção node dist/index.js, sem tsx.
-globs: package.json,tsconfig.json,deploy/ecosystem.config.cjs,src/**/*.ts
+globs: package.json,tsconfig.json,deploy/*,scripts/permanent-node.cjs,scripts/validate-pm2-registration*.cjs,src/**/*.ts
 alwaysApply: true
 ---
 
@@ -8,8 +8,10 @@ alwaysApply: true
 
 `@/*` no source é ok. O `dist` **não** pode sair com `@/`.
 
-- `build`: `tsc --project tsconfig.json && tsc-alias -p tsconfig.json`
+- `build`: `tsc --project tsconfig.json && tsc-alias -p tsconfig.json && node scripts/assert-dist-no-alias.cjs`
 - `tsc-alias` no `tsconfig`: `resolveFullPaths` + extensão `.js`
 - `start`: `node dist/index.js`
-- `deploy/ecosystem.config.cjs`: `script: "dist/index.js"`
+- `deploy/ecosystem.config.cjs`: `script: "dist/index.js"` (nunca `tsx` em produção)
+- Interpreter do PM2: caminho absoluto do Node do nvm. Nunca `node` solto nem atalho fnm (`fnm_multishells`).
+- O deploy valida processo, PID, reinícios, readiness e `dump.pm2` antes de concluir.
 - Não “consertar” isso na infra. Não voltar `build` só com `tsc`.
