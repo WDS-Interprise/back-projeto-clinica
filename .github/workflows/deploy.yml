@@ -163,6 +163,7 @@ jobs:
             esac
 
             NODE_BIN_DIR="$(dirname "${NODE_BIN}")"
+            NVM_NODE_PREFIX="$(dirname "${NODE_BIN_DIR}")"
             NPM_BIN="${NODE_BIN_DIR}/npm"
             NPX_BIN="${NODE_BIN_DIR}/npx"
 
@@ -172,8 +173,19 @@ jobs:
             fi
 
             PM2_CLI="$("${NPM_BIN}" root -g)/pm2/bin/pm2"
-            EXPECTED_PM2_CLI="${HOME}/.nvm/versions/node/${NODE_VERSION}/lib/node_modules/pm2/bin/pm2"
-            if [ ! -f "${PM2_CLI}" ] || [ "${PM2_CLI}" != "${EXPECTED_PM2_CLI}" ]; then
+            EXPECTED_PM2_CLI="${NVM_NODE_PREFIX}/lib/node_modules/pm2/bin/pm2"
+            case "${PM2_CLI}" in
+              "${NVM_NODE_PREFIX}"/lib/node_modules/pm2/bin/pm2) ;;
+              *)
+                echo "PM2 permanente nao encontrado no Node do nvm."
+                echo "Node: ${NODE_BIN}"
+                echo "PM2 encontrado: ${PM2_CLI}"
+                echo "PM2 esperado: ${EXPECTED_PM2_CLI}"
+                echo "Siga deploy/README.md."
+                exit 1
+                ;;
+            esac
+            if [ ! -f "${PM2_CLI}" ]; then
               echo "PM2 permanente nao encontrado em ${EXPECTED_PM2_CLI}. Siga deploy/README.md."
               exit 1
             fi
@@ -188,8 +200,8 @@ jobs:
               echo "Servico ${PM2_SERVICE} ainda aponta para o fnm. Siga deploy/README.md."
               exit 1
             fi
-            if ! grep -Fq "${HOME}/.nvm/versions/node/${NODE_VERSION}" "${PM2_SERVICE_FILE}"; then
-              echo "Servico ${PM2_SERVICE} nao aponta para o Node ${NODE_VERSION} do nvm."
+            if ! grep -Fq "${NVM_NODE_PREFIX}" "${PM2_SERVICE_FILE}"; then
+              echo "Servico ${PM2_SERVICE} nao aponta para o Node permanente do nvm: ${NVM_NODE_PREFIX}"
               echo "Regere o servico conforme deploy/README.md."
               exit 1
             fi
