@@ -22,12 +22,12 @@ ALTER TABLE "PrescriptionSignature" ADD COLUMN "documentHash" TEXT;
 ALTER TABLE "PrescriptionSignature" ADD COLUMN "signedDocumentHash" TEXT;
 ALTER TABLE "PrescriptionSignature" ADD COLUMN "isCryptographic" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "PrescriptionSignature" ADD COLUMN "legalClass" TEXT NOT NULL DEFAULT 'SIMULATION';
-ALTER TABLE "PrescriptionSignature" ADD COLUMN "requestedAt" DATETIME;
-ALTER TABLE "PrescriptionSignature" ADD COLUMN "validatedAt" DATETIME;
-ALTER TABLE "PrescriptionSignature" ADD COLUMN "failedAt" DATETIME;
+ALTER TABLE "PrescriptionSignature" ADD COLUMN "requestedAt" TIMESTAMP(3);
+ALTER TABLE "PrescriptionSignature" ADD COLUMN "validatedAt" TIMESTAMP(3);
+ALTER TABLE "PrescriptionSignature" ADD COLUMN "failedAt" TIMESTAMP(3);
 ALTER TABLE "PrescriptionSignature" ADD COLUMN "failureCode" TEXT;
 ALTER TABLE "PrescriptionSignature" ADD COLUMN "failureMessage" TEXT;
-ALTER TABLE "PrescriptionSignature" ADD COLUMN "updatedAt" DATETIME;
+ALTER TABLE "PrescriptionSignature" ADD COLUMN "updatedAt" TIMESTAMP(3);
 
 CREATE TABLE IF NOT EXISTS "OutboxEvent" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -39,11 +39,11 @@ CREATE TABLE IF NOT EXISTS "OutboxEvent" (
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "maxAttempts" INTEGER NOT NULL DEFAULT 8,
-    "nextAttemptAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "nextAttemptAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "lastError" TEXT,
-    "processedAt" DATETIME,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "processedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "OutboxEvent_clinicId_fkey" FOREIGN KEY ("clinicId") REFERENCES "Clinic" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS "IdempotencyRecord" (
     "requestHash" TEXT NOT NULL,
     "responseJson" TEXT,
     "status" TEXT NOT NULL DEFAULT 'STARTED',
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "IdempotencyRecord_clinicId_fkey" FOREIGN KEY ("clinicId") REFERENCES "Clinic" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
