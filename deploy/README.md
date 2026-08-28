@@ -26,8 +26,9 @@ uma janela de manutenção e confirme antes que `pm2 save` contém todos os apps
 - Serviço esperado para o usuário root: `pm2-root.service`
 - Ecosystem: `interpreter` via `resolvePermanentNvmNode()` + `env_file: ".env"`
 
-O deploy falha antes de apagar arquivos se Node, PM2 ou o serviço systemd ainda apontarem
-para fnm, `/run/user/` ou outra versão do Node.
+O deploy **migra automaticamente** a unit `pm2-*.service` de fnm → nvm permanente
+(`unstartup` + `startup` com o Node do nvm) antes de apagar arquivos. Se a migração
+falhar e a unit ainda tiver fnm/`/run/user/`, o deploy aborta.
 
 ## 1. Selecionar o Node permanente
 
