@@ -1,5 +1,16 @@
 # Operação do PM2 na VPS
 
+## Proibido (não negociar)
+
+- **fnm**, `fnm_multishells`, `/run/user/`, `~/.fnm`, `~/.local/share/fnm` no PM2 ou no systemd
+- Remover `interpreter` / `env_file` do `ecosystem.config.cjs`
+- Healthcheck que aceita 404 em `/` como “API ok”
+- Deploy sem job `verify` e sem `validate-pm2-registration.cjs`
+- “Simplificar” o `.github/workflows/deploy.yml` para um script curto com `PATH` preferindo fnm
+
+Em ago/2026 o commit `a376cee` fez exatamente isso e a API ficou em **502** (`api.clinmax.com.br`).
+O contrato endurecido (nvm permanente + env + ready/health) **precisa existir**.
+
 Este procedimento elimina referências ao fnm no PM2 e no serviço de inicialização do Ubuntu.
 Ele deve ser executado uma vez antes do primeiro deploy com o workflow endurecido.
 
@@ -13,6 +24,7 @@ uma janela de manutenção e confirme antes que `pm2 save` contém todos os apps
 - API: `$HOME/clinmax-api/dist/index.js`
 - Porta: `3550`
 - Serviço esperado para o usuário root: `pm2-root.service`
+- Ecosystem: `interpreter` via `resolvePermanentNvmNode()` + `env_file: ".env"`
 
 O deploy falha antes de apagar arquivos se Node, PM2 ou o serviço systemd ainda apontarem
 para fnm, `/run/user/` ou outra versão do Node.
