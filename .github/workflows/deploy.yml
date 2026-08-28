@@ -9,7 +9,8 @@ name: Deploy ClinMax API (VPS)
 # - Se pm2-*.service ainda aponta para fnm, o deploy MIGRA para nvm (unstartup+startup) e só aborta se persistir.
 # - PM2 com interpreter = resolvePermanentNvmNode() + env_file .env (ver deploy/ecosystem.config.cjs).
 # - Healthcheck exige /api/health=200 E /api/ready com db:true. 404 em "/" NÃO é sucesso.
-# - Job verify (test+build) antes do deploy. validate-pm2-registration após startOrReload.
+# - Job verify (test+build) antes do deploy. PM2 delete+start (dist/index.js). validate-pm2-registration.
+# - DATABASE_URL Postgres obrigatorio; sem migrate||db push; schema forcada para postgresql na VPS.
 # Regressão a376cee (ago/2026) derrubou a API em produção ao remover isso.
 
 on:
@@ -27,7 +28,8 @@ on:
 
 concurrency:
   group: deploy-clinmax-api
-  cancel-in-progress: true
+  # Nunca abortar deploy VPS em andamento (push/main, dispatch ou workflow_call)
+  cancel-in-progress: false
 
 env:
   DEPLOY_TMP: /tmp/clinmax-api-deploy
@@ -48,7 +50,8 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Configurar Node.js
-        uses: actions/setup-node@v4
+        # v5+ roda no runtime Node 24 do runner (evita deprecation do Node 20 em setup-node@v4)
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -91,12 +94,40 @@ jobs:
         env:
           DOTENV_FILE: ${{ vars.DOTENV_FILE }}
         run: |
+          set -euo pipefail
           test -n "$DOTENV_FILE" || (echo "Variable DOTENV_FILE ausente" && exit 1)
           printf '%s\n' "$DOTENV_FILE" > .env.deploy
           tr -d '\r' < .env.deploy > .env.deploy.tmp && mv .env.deploy.tmp .env.deploy
           grep -q '^DATABASE_URL=' .env.deploy
           grep -q '^JWT_SECRET=' .env.deploy
           grep -q '^PORT=' .env.deploy
+
+          # Strip quotes/spaces — "file:./dev.db" nao pode bypassar o check
+          RAW_DB="$(grep -E '^DATABASE_URL=' .env.deploy | head -n1 | sed 's/^DATABASE_URL=//')"
+          RAW_DB="$(printf '%s' "$RAW_DB" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+          if [ -z "$RAW_DB" ]; then
+            echo "DATABASE_URL vazia em DOTENV_FILE (Environment Production)."
+            exit 1
+          fi
+          case "$RAW_DB" in
+            postgresql://*|postgres://*) ;;
+            *)
+              echo "DOTENV_FILE DATABASE_URL deve ser Postgres (postgresql:// ou postgres://)."
+              echo "Recebido (prefixo): ${RAW_DB:0:48}"
+              echo "Exemplo: DATABASE_URL=\"postgresql://clinmax:SENHA@127.0.0.1:5433/clinmax?schema=public\""
+              exit 1
+              ;;
+          esac
+          if printf '%s' "$RAW_DB" | grep -Eiq '(^file:|^sqlite:|sqlite)'; then
+            echo "SQLite/file: proibido em producao. Corrija DOTENV_FILE no GitHub Environment Production."
+            exit 1
+          fi
+          if ! printf '%s' "$RAW_DB" | grep -Eq '127\.0\.0\.1:5433|localhost:5433'; then
+            echo "AVISO: Postgres de producao esperado em 127.0.0.1:5433 (deploy/docker-compose.prod.yml)."
+            echo "URL aponta para outro host/porta — confira se e intencional."
+          fi
+          echo "DATABASE_URL de producao OK (Postgres)."
 
       - name: Compactar código
         run: git archive --format=tar.gz --output=repo.tar.gz HEAD
@@ -274,19 +305,37 @@ jobs:
             . "${TMP}/.env.deploy"
             set +a
 
+            # Normaliza DATABASE_URL (aspas/espacos) — evita bypass do check com "file:./dev.db"
+            DATABASE_URL="$(printf '%s' "${DATABASE_URL:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+              -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+            export DATABASE_URL
+
             APP_PORT="${PORT:-}"
             if [ "${APP_PORT}" != "${EXPECTED_APP_PORT}" ]; then
               echo "PORT precisa ser ${EXPECTED_APP_PORT} para corresponder ao Nginx. Recebida: ${APP_PORT:-vazia}."
               exit 1
             fi
-            if [ -z "${DATABASE_URL:-}" ]; then
+            if [ -z "${DATABASE_URL}" ]; then
               echo "DATABASE_URL de producao esta vazia."
+              echo "Ajuste a variable DOTENV_FILE no GitHub Environment Production."
               exit 1
             fi
-            if echo "${DATABASE_URL}" | grep -Eq '^file:'; then
-              echo "DATABASE_URL de producao aponta para SQLite (file:...)."
+            case "${DATABASE_URL}" in
+              postgresql://*|postgres://*) ;;
+              *)
+                echo "DATABASE_URL de producao deve ser Postgres (postgresql:// ou postgres://)."
+                echo "Recebido (prefixo): ${DATABASE_URL:0:48}"
+                echo "Exemplo: postgresql://clinmax:SENHA@127.0.0.1:5433/clinmax?schema=public"
+                exit 1
+                ;;
+            esac
+            if printf '%s' "${DATABASE_URL}" | grep -Eiq '(^file:|^sqlite:|sqlite)'; then
+              echo "DATABASE_URL de producao aponta para SQLite/file: — abortando (sem fallback)."
               echo "Ajuste DOTENV_FILE no GitHub Environment Production para Postgres (127.0.0.1:5433)."
               exit 1
+            fi
+            if ! printf '%s' "${DATABASE_URL}" | grep -Eq '127\.0\.0\.1:5433|localhost:5433'; then
+              echo "AVISO: esperado Postgres em 127.0.0.1:5433 (docker-compose.prod.yml)."
             fi
 
             rm -rf "${APP_DIR}"/*
@@ -296,6 +345,25 @@ jobs:
             cp "${TMP}/ecosystem.config.cjs" "${APP_DIR}/deploy/ecosystem.config.cjs"
             cp "${TMP}/docker-compose.prod.yml" "${APP_DIR}/deploy/docker-compose.prod.yml"
             cd "${APP_DIR}"
+
+            # Repo usa sqlite so para DEV local. Em producao forçamos Postgres + env(DATABASE_URL)
+            # (senao prisma ignora DATABASE_URL e usa file:./dev.db do schema).
+            "${NODE_BIN}" -e '
+              const fs = require("fs");
+              const path = "prisma/schema.prisma";
+              let text = fs.readFileSync(path, "utf8");
+              const next = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}`;
+              const replaced = text.replace(/datasource\s+db\s*\{[\s\S]*?\n\}/, next);
+              if (replaced === text) {
+                console.error("Falha ao forcar datasource postgresql em prisma/schema.prisma");
+                process.exit(1);
+              }
+              fs.writeFileSync(path, replaced);
+              console.log("schema.prisma: datasource forcada para postgresql + env(DATABASE_URL)");
+            '
 
             if command -v docker >/dev/null 2>&1; then
               if docker ps -a --format '{{.Names}}' | grep -qx clinmax_postgres; then
@@ -310,8 +378,10 @@ jobs:
             NODE_ENV=development "${NPM_BIN}" ci --include=dev
             "${NPM_BIN}" run build
             "${NPX_BIN}" prisma generate
-            "${NPX_BIN}" prisma migrate deploy || "${NPX_BIN}" prisma db push
-            "${NPM_BIN}" run db:seed || true
+            # SEM fallback db push — migrate falhou em sqlite e criava banco vazio. Abortar.
+            "${NPX_BIN}" prisma migrate deploy
+            # Seed nao roda em producao (evita corrupt/unique e nao bloqueia deploy)
+            echo "Seed de producao ignorado (seguro)."
             "${NPM_BIN}" prune --omit=dev
 
             export NODE_ENV=production
@@ -330,6 +400,9 @@ jobs:
             sudo systemctl reload nginx
 
             show_diagnostics() {
+              echo "=== diagnostico clinmax-api ==="
+              echo "Chaves no .env (valores ocultos):"
+              grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "${APP_DIR}/.env" | cut -d= -f1 | sort || true
               curl -s -i "http://127.0.0.1:${APP_PORT}/api/health" || true
               curl -s -i "http://127.0.0.1:${APP_PORT}/api/ready" || true
               ss -tlnp | grep ":${APP_PORT}" || true
@@ -337,8 +410,19 @@ jobs:
               run_pm2 logs clinmax-api --lines 80 --nostream || true
             }
 
-            run_pm2 startOrReload deploy/ecosystem.config.cjs --update-env
+            # startOrReload preservava registro antigo (src/index.ts + tsx). Delete + start limpa.
+            run_pm2 delete clinmax-api || true
+            CLINMAX_API_DIR="${APP_DIR}" CLINMAX_NODE_BIN="${NODE_BIN}" \
+              run_pm2 start deploy/ecosystem.config.cjs --update-env
             run_pm2 reset clinmax-api
+
+            run_pm2 jlist > "${TMP}/pm2-after-start.json"
+            if ! "${NODE_BIN}" scripts/validate-pm2-registration.cjs \
+              "${TMP}/pm2-after-start.json" "${NODE_BIN}" "${APP_DIR}" saved; then
+              echo "PM2 nao registrou dist/index.js apos start (sem tsx/src)."
+              show_diagnostics
+              exit 1
+            fi
 
             HEALTH_FILE="${TMP}/clinmax-health.json"
             READY_FILE="${TMP}/clinmax-ready.json"

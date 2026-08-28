@@ -202,7 +202,25 @@ describe("validacao do registro PM2", () => {
           NVM_NODE,
           APP_DIR
         ),
-      /Script incorreto/
+      /Script incorreto|tsx|src/
+    )
+  })
+
+  it("rejeita interpreter_args com tsx mesmo com script dist", () => {
+    assert.throws(
+      () =>
+        validatePm2Registration(
+          [
+            pm2Process({
+              pm2_env: {
+                node_args: "--import tsx --env-file=.env",
+              },
+            }),
+          ],
+          NVM_NODE,
+          APP_DIR
+        ),
+      /tsx/
     )
   })
 

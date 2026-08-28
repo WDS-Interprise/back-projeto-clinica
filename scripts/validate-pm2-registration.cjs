@@ -48,6 +48,25 @@ function validatePm2Registration(
     )
   }
 
+  const interpreterArgs = [
+    pm2Env.exec_interpreter_args,
+    pm2Env.interpreter_args,
+    pm2Env.node_args,
+    pm2Env.args,
+  ]
+    .flatMap((value) => {
+      if (Array.isArray(value)) return value.map(String)
+      if (value == null || value === "") return []
+      return [String(value)]
+    })
+    .join(" ")
+
+  if (/tsx|src[/\\]index\.ts/i.test(`${script} ${interpreterArgs}`)) {
+    throw new Error(
+      `PM2 nao pode usar tsx nem src/index.ts em producao. script=${script}, args=${interpreterArgs || "(nenhum)"}`
+    )
+  }
+
   if (requireRuntime) {
     if (pm2Env.status !== "online" || !Number.isInteger(app.pid) || app.pid <= 0) {
       throw new Error(
