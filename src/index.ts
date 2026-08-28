@@ -146,6 +146,35 @@ app.get("/api/ready", async (_req, reply) => {
   }
 })
 
+function isPrismaAuthFailure(err: unknown): boolean {
+  const anyErr = err as { code?: string; message?: string }
+  const msg = String(anyErr?.message ?? err)
+  return (
+    anyErr?.code === "P1000" ||
+    /Authentication failed/i.test(msg) ||
+    /credentials for .* are not valid/i.test(msg)
+  )
+}
+
+/** Fail-fast no boot: auth/URL errada não deve virar spam de unhandledRejection. */
+async function assertDatabaseReadyOrExit() {
+  const prisma = (await import("@/lib/prisma.js")).default
+  try {
+    await prisma.$queryRaw`SELECT 1`
+  } catch (err) {
+    if (isPrismaAuthFailure(err)) {
+      console.error(
+        "[ClinMax API] FATAL: autenticação Postgres falhou (usuario/senha ou encoding de DATABASE_URL).",
+        "Alinhe a senha do user clinmax com o .env (porta 5435) — ver deploy/README.md.",
+        "Evite aspas em volta dos valores no .env (PM2 env_file pode preservá-las)."
+      )
+    } else {
+      console.error("[ClinMax API] FATAL: banco indisponível no boot:", err)
+    }
+    process.exit(1)
+  }
+}
+
 await app.register(authRoutes, { prefix: "/api/auth" })
 await app.register(patientRoutes, { prefix: "/api/patients" })
 await app.register(doctorRoutes, { prefix: "/api/doctors" })
@@ -182,6 +211,8 @@ await app.register(webhooksRoutes, { prefix: "/api/webhooks" })
 await app.register(publicPlansRoutes, { prefix: "/api/public" })
 await app.register(publicPrescriptionRoutes, { prefix: "/api/public" })
 
+await assertDatabaseReadyOrExit()
+
 app.listen({ port: PORT, host: "0.0.0.0" }).then(async () => {
   console.log(`[ClinMax API] running on http://localhost:${PORT}`)
   try {
@@ -189,8 +220,18 @@ app.listen({ port: PORT, host: "0.0.0.0" }).then(async () => {
     await migrateExistingClinicsToLegacy()
     await runSubscriptionLifecycle()
   } catch (err) {
+    if (isPrismaAuthFailure(err)) {
+      console.error("[SaaS Billing] FATAL: auth Postgres falhou após listen — encerrando.")
+      process.exit(1)
+    }
     console.warn("[SaaS Billing] seed/migration on boot:", err)
   }
-  void resumeWhatsappSessionsOnBoot()
+  void resumeWhatsappSessionsOnBoot().catch((err) => {
+    if (isPrismaAuthFailure(err)) {
+      console.error("[WhatsApp] FATAL: auth Postgres no resume — encerrando.")
+      process.exit(1)
+    }
+    console.warn("[WhatsApp] resume on boot failed:", err)
+  })
   startWhatsappScheduler()
 })
