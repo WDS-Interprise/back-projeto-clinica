@@ -6,6 +6,7 @@ name: Deploy ClinMax API (VPS)
 #
 # CONTRATO OBRIGATÓRIO — NÃO "SIMPLIFICAR":
 # - Node permanente via nvm (NODE_VERSION abaixo). PROIBIDO fnm / caminhos temporários.
+# - Se pm2-*.service ainda aponta para fnm, o deploy MIGRA para nvm (unstartup+startup) e só aborta se persistir.
 # - PM2 com interpreter = resolvePermanentNvmNode() + env_file .env (ver deploy/ecosystem.config.cjs).
 # - Healthcheck exige /api/health=200 E /api/ready com db:true. 404 em "/" NÃO é sucesso.
 # - Job verify (test+build) antes do deploy. validate-pm2-registration após startOrReload.
@@ -197,19 +198,61 @@ jobs:
               exit 1
             fi
 
+            run_pm2() {
+              "${NODE_BIN}" "${PM2_CLI}" "$@"
+            }
+
+            # Regenera a unit systemd com o Node permanente do nvm (nunca fnm).
+            migrate_pm2_systemd_to_nvm() {
+              echo "Migrando ${PM2_SERVICE} para Node permanente do nvm (${NODE_BIN})..."
+              run_pm2 save || true
+              run_pm2 unstartup systemd || true
+              STARTUP_OUT="$(run_pm2 startup systemd -u "$(id -un)" --hp "${HOME}" 2>&1 || true)"
+              printf '%s\n' "${STARTUP_OUT}"
+              STARTUP_CMD="$(printf '%s\n' "${STARTUP_OUT}" | grep -E '^(sudo |env PATH=)' | tail -n 1 || true)"
+              if [ -n "${STARTUP_CMD}" ]; then
+                echo "Executando comando de startup do PM2..."
+                eval "${STARTUP_CMD}"
+              fi
+              systemctl daemon-reload
+              systemctl enable "${PM2_SERVICE}"
+              systemctl restart "${PM2_SERVICE}"
+              sleep 2
+            }
+
             PM2_SERVICE="pm2-$(id -un).service"
             PM2_SERVICE_FILE="${TMP}/${PM2_SERVICE}.txt"
+            NEED_PM2_MIGRATE=0
             if ! systemctl cat "${PM2_SERVICE}" > "${PM2_SERVICE_FILE}" 2>/dev/null; then
-              echo "Servico ${PM2_SERVICE} nao encontrado. Siga deploy/README.md."
-              exit 1
+              echo "Servico ${PM2_SERVICE} nao encontrado — gerando com nvm permanente."
+              NEED_PM2_MIGRATE=1
+            else
+              if grep -Eq 'fnm_multishells|/run/user/|/\.fnm/|/\.local/share/fnm' "${PM2_SERVICE_FILE}"; then
+                echo "Servico ${PM2_SERVICE} ainda aponta para o fnm — migrando automaticamente."
+                NEED_PM2_MIGRATE=1
+              elif ! grep -Fq "${NVM_NODE_PREFIX}" "${PM2_SERVICE_FILE}"; then
+                echo "Servico ${PM2_SERVICE} nao aponta para o Node permanente do nvm: ${NVM_NODE_PREFIX}"
+                echo "Migrando automaticamente."
+                NEED_PM2_MIGRATE=1
+              fi
             fi
+
+            if [ "${NEED_PM2_MIGRATE}" -eq 1 ]; then
+              migrate_pm2_systemd_to_nvm
+              if ! systemctl cat "${PM2_SERVICE}" > "${PM2_SERVICE_FILE}" 2>/dev/null; then
+                echo "Falha: ${PM2_SERVICE} continua ausente apos migracao. Siga deploy/README.md."
+                exit 1
+              fi
+            fi
+
             if grep -Eq 'fnm_multishells|/run/user/|/\.fnm/|/\.local/share/fnm' "${PM2_SERVICE_FILE}"; then
-              echo "Servico ${PM2_SERVICE} ainda aponta para o fnm. Siga deploy/README.md."
+              echo "Falha: ${PM2_SERVICE} ainda aponta para o fnm apos migracao."
+              systemctl cat "${PM2_SERVICE}" || true
               exit 1
             fi
             if ! grep -Fq "${NVM_NODE_PREFIX}" "${PM2_SERVICE_FILE}"; then
-              echo "Servico ${PM2_SERVICE} nao aponta para o Node permanente do nvm: ${NVM_NODE_PREFIX}"
-              echo "Regere o servico conforme deploy/README.md."
+              echo "Falha: ${PM2_SERVICE} nao aponta para o Node permanente do nvm: ${NVM_NODE_PREFIX}"
+              systemctl cat "${PM2_SERVICE}" || true
               exit 1
             fi
             if ! systemctl is-enabled --quiet "${PM2_SERVICE}"; then
@@ -217,13 +260,15 @@ jobs:
               exit 1
             fi
             if ! systemctl is-active --quiet "${PM2_SERVICE}"; then
-              echo "Servico ${PM2_SERVICE} nao esta ativo."
-              exit 1
+              echo "Servico ${PM2_SERVICE} nao esta ativo — tentando restart."
+              systemctl restart "${PM2_SERVICE}" || true
+              sleep 2
+              if ! systemctl is-active --quiet "${PM2_SERVICE}"; then
+                echo "Servico ${PM2_SERVICE} continua inativo."
+                systemctl status "${PM2_SERVICE}" --no-pager || true
+                exit 1
+              fi
             fi
-
-            run_pm2() {
-              "${NODE_BIN}" "${PM2_CLI}" "$@"
-            }
 
             set -a
             . "${TMP}/.env.deploy"
