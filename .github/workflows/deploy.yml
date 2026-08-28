@@ -348,14 +348,17 @@ jobs:
 
             # Repo usa sqlite so para DEV local. Em producao forçamos Postgres + env(DATABASE_URL)
             # (senao prisma ignora DATABASE_URL e usa file:./dev.db do schema).
+            # IMPORTANTE: manter indent YAML do bloco | — NUNCA linhas com indent menor (quebra o workflow).
             "${NODE_BIN}" -e '
               const fs = require("fs");
               const path = "prisma/schema.prisma";
               let text = fs.readFileSync(path, "utf8");
-              const next = `datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}`;
+              const next = [
+                "datasource db {",
+                "  provider = \"postgresql\"",
+                "  url      = env(\"DATABASE_URL\")",
+                "}"
+              ].join("\n");
               const replaced = text.replace(/datasource\s+db\s*\{[\s\S]*?\n\}/, next);
               if (replaced === text) {
                 console.error("Falha ao forcar datasource postgresql em prisma/schema.prisma");
