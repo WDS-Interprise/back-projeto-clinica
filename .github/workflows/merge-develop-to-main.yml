@@ -16,7 +16,8 @@ permissions:
 
 concurrency:
   group: merge-develop-main-back
-  cancel-in-progress: true
+  # Fila em vez de cancelar: um push novo em develop não aborta merge+deploy em voo na VPS
+  cancel-in-progress: false
 
 jobs:
   merge:
