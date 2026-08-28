@@ -178,6 +178,48 @@ curl -fsS http://127.0.0.1:3550/api/ready
 
 As respostas esperadas contêm `status: ok` e `status: ready`, com `db: true`.
 
+## Postgres ClinMax (porta 5435)
+
+Na VPS o container `clinmax_postgres` publica **127.0.0.1:5435→5432**.
+`DATABASE_URL` de produção deve usar essa porta (ver `.env.production.example`).
+
+### PM2 `env_file` e aspas
+
+O ecosystem usa `env_file: ".env"`. Valores com aspas (`DATABASE_URL="postgresql://..."`)
+podem fazer o PM2 entregar a aspas como parte da senha → Prisma `Authentication failed`.
+O deploy reescreve o `.env` **sem aspas externas**. Prefira no GitHub `DOTENV_FILE`:
+
+```text
+DATABASE_URL=postgresql://clinmax:SENHA@127.0.0.1:5435/clinmax?schema=public
+```
+
+### Sincronizar senha Postgres ↔ `.env` (sem precisar da senha antiga)
+
+`POSTGRES_PASSWORD` no compose só vale na **primeira** criação do volume. Se o volume já
+existe, alinhe o user à senha do `.env` (ou o contrário).
+
+```bash
+# Ver senha com que o container foi iniciado (pode diferir do volume antigo)
+docker exec clinmax_postgres printenv POSTGRES_PASSWORD POSTGRES_USER POSTGRES_DB
+
+# Extrair senha do .env da API (não cole em chat/logs públicos)
+# DATABASE_URL=postgresql://USER:SENHA@127.0.0.1:5435/DB
+grep '^DATABASE_URL=' ~/clinmax-api/.env
+
+# Opção A — resetar senha DENTRO do Postgres para bater com o .env
+# (troque SENHA_DO_ENV pela senha da DATABASE_URL; caracteres especiais: use $$ ou dollar-quoting)
+docker exec -it clinmax_postgres \
+  psql -U clinmax -d clinmax \
+  -c "ALTER USER clinmax WITH PASSWORD 'SENHA_DO_ENV';"
+
+# Opção B — se a senha do volume for a do printenv e o .env estiver errado,
+# atualize DATABASE_URL no .env / DOTENV_FILE e reinicie:
+#   pm2 restart clinmax-api --update-env
+
+# Conferir
+curl -fsS http://127.0.0.1:3550/api/ready
+```
+
 ## 7. Testar um reboot planejado
 
 Faça este passo somente dentro da janela de manutenção:
