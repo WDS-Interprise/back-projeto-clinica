@@ -415,8 +415,8 @@ jobs:
             NODE_ENV=development "${NPM_BIN}" ci --include=dev
             "${NPM_BIN}" run build
             "${NPX_BIN}" prisma generate
-            # SEM fallback db push — migrate falhou em sqlite e criava banco vazio. Abortar.
-            "${NPX_BIN}" prisma migrate deploy
+            # SEM fallback db push. Helper: baseline P3005 + limpa FAILED (P3018) + migrate deploy.
+            NPX_BIN="${NPX_BIN}" "${NODE_BIN}" scripts/prod-migrate.cjs
             # Seed nao roda em producao (evita corrupt/unique e nao bloqueia deploy)
             echo "Seed de producao ignorado (seguro)."
             "${NPM_BIN}" prune --omit=dev

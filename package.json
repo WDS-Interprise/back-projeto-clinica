@@ -9,6 +9,7 @@
     "build": "tsc --project tsconfig.json && tsc-alias -p tsconfig.json && node scripts/assert-dist-no-alias.cjs",
     "start": "node dist/index.js",
     "db:migrate": "prisma migrate dev",
+    "db:prod-migrate": "node scripts/prod-migrate.cjs",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "mail:test": "node --env-file=.env --import tsx scripts/test-mail.ts",

@@ -183,6 +183,43 @@ As respostas esperadas contêm `status: ok` e `status: ready`, com `db: true`.
 Na VPS o container `clinmax_postgres` publica **127.0.0.1:5435→5432**.
 `DATABASE_URL` de produção deve usar essa porta (ver `.env.production.example`).
 
+## Prisma migrate em produção (P3005 / P3018)
+
+O banco de prod veio da era `db push` (schema parcial, sem `_prisma_migrations`).
+`prisma migrate deploy` puro pode falhar com:
+
+- **P3005** — schema não vazio, sem histórico → baseline
+- **P3018** — migration `clinical_core_hardening` falhou (ex.: `Encounter` ausente)
+
+O deploy chama `node scripts/prod-migrate.cjs` (não `migrate deploy` solto): baseline seletivo,
+limpa FAILED com `resolve --rolled-back`, depois `migrate deploy`. **Sem** `db push` / sqlite.
+
+### SQL via docker (não use `psql "$DATABASE_URL"` com `?schema=public`)
+
+O client `psql` local rejeita o query param `schema`. Use:
+
+```bash
+docker exec -i clinmax_postgres psql -U clinmax -d clinmax
+```
+
+### Recover SSH rápido (migration FAILED)
+
+```bash
+cd ~/clinmax-api
+set -a; . ./.env; set +a
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use 24.15.0
+
+npx prisma migrate resolve --rolled-back 20260825010000_clinical_core_hardening
+npm run db:prod-migrate
+# ou, apos o Action publicar o codigo novo:
+# npx prisma migrate deploy
+
+curl -fsS http://127.0.0.1:3550/api/health; echo
+curl -fsS http://127.0.0.1:3550/api/ready; echo
+```
+
+Caminho permanente: merge `develop` → `main` (Action de deploy). Não depender de remendo eterno na VPS.
+
 ### PM2 `env_file` e aspas
 
 O ecosystem usa `env_file: ".env"`. Valores com aspas (`DATABASE_URL="postgresql://..."`)
