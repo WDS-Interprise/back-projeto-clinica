@@ -22,6 +22,7 @@ const MIGRATIONS = {
   whatsapp: "20260521220000_whatsapp_ai_assistant",
   clinical: "20260825010000_clinical_core_hardening",
   outboxPlatform: "20260829021000_outbox_platform_settings",
+  saasPlanWhatsappAi: "20260829030000_saas_plan_whatsapp_ai_prod",
 }
 
 function fail(msg) {

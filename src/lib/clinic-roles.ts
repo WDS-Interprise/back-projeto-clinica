@@ -166,23 +166,38 @@ export async function resolveUserPermissions(
   role: string,
   _hasClinicalProfile: boolean
 ): Promise<Permission[]> {
-  const link = await prisma.userClinic.findUnique({
-    where: { userId_clinicId: { userId, clinicId } },
-    include: { clinicRole: true },
-  })
+  try {
+    const link = await prisma.userClinic.findUnique({
+      where: { userId_clinicId: { userId, clinicId } },
+      include: { clinicRole: true },
+    })
 
-  let clinicRole = link?.clinicRole ?? null
-  if (!clinicRole) {
-    const slug = roleSlugForUserRole(role)
-    if (slug) {
-      clinicRole = await prisma.clinicRole.findUnique({
-        where: { clinicId_slug: { clinicId, slug } },
-      })
+    let clinicRole = link?.clinicRole ?? null
+    if (!clinicRole) {
+      const slug = roleSlugForUserRole(role)
+      if (slug) {
+        clinicRole = await prisma.clinicRole.findUnique({
+          where: { clinicId_slug: { clinicId, slug } },
+        })
+      }
     }
-  }
 
-  if (clinicRole?.permissionsJson) {
-    return parsePermissionsJson(clinicRole.permissionsJson)
+    if (clinicRole?.permissionsJson) {
+      return parsePermissionsJson(clinicRole.permissionsJson)
+    }
+  } catch (err: unknown) {
+    const anyErr = err as { code?: string; message?: string }
+    const msg = String(anyErr?.message ?? err)
+    if (
+      anyErr?.code === "P2021" ||
+      anyErr?.code === "P2022" ||
+      /does not exist/i.test(msg)
+    ) {
+      // ClinicRole / clinicRoleId ausente em DB parcial — fallback para mapa estatico
+      console.warn("[clinic-roles] schema incompleto — usando permissoes por Role")
+    } else {
+      throw err
+    }
   }
 
   return getPermissionsForRole(role, { hasClinicalProfile: _hasClinicalProfile })
