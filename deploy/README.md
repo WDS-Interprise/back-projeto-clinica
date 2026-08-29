@@ -220,11 +220,20 @@ curl -fsS http://127.0.0.1:3550/api/ready; echo
 
 Caminho permanente: merge `develop` → `main` (Action de deploy). Não depender de remendo eterno na VPS.
 
+### `.env` na VPS (preservado entre deploys)
+
+O `.env` da VPS (`~/clinmax-api/.env`) **é preservado** em cada Action: o deploy faz
+backup antes do `rm -rf` e restaura depois do extract. `DOTENV_FILE` (GitHub Environment
+Production) **só semeia** na primeira instalação (quando ainda não há `.env` na VPS).
+Para rotacionar secrets, edite o `.env` na VPS ou substitua deliberadamente — não
+dependa de reescrever via `DOTENV_FILE` em todo push.
+
 ### PM2 `env_file` e aspas
 
 O ecosystem usa `env_file: ".env"`. Valores com aspas (`DATABASE_URL="postgresql://..."`)
 podem fazer o PM2 entregar a aspas como parte da senha → Prisma `Authentication failed`.
-O deploy reescreve o `.env` **sem aspas externas**. Prefira no GitHub `DOTENV_FILE`:
+O deploy reescreve o `.env` **sem aspas externas**. Na first install, prefira no GitHub
+`DOTENV_FILE` sem aspas:
 
 ```text
 DATABASE_URL=postgresql://clinmax:SENHA@127.0.0.1:5435/clinmax?schema=public
