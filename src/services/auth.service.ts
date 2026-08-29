@@ -129,9 +129,19 @@ async function buildAuthSession(user: AuthUserRow) {
 }
 
 export async function login(email: string, password: string) {
+  // select explícito: evita 500 se colunas extras do schema (googleId etc.) ainda nao existem no DB
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { doctorProfile: { select: { id: true } } },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      password: true,
+      role: true,
+      active: true,
+      isAccountAdmin: true,
+      doctorProfile: { select: { id: true } },
+    },
   })
   if (!user) return null
 

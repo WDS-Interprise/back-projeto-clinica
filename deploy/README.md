@@ -293,3 +293,28 @@ Ao trocar a versão do Node:
 
 Não atualize somente o symlink do Node. A unit do systemd precisa ser regenerada porque
 ela guarda caminhos absolutos.
+
+## Schema drift (login 500 / Plan / aiMode)
+
+Se o Postgres veio da era `db push` e o historico Prisma esta incompleto, a API pode
+ficar `ready` com `db:true` mas falhar no seed (`Plan` inexistente), no scheduler
+(`ClinicWhatsappSettings.aiMode`) e no login (colunas do `User`/relacoes fora do sync).
+
+### Desbloqueio ASAP (nao destrutivo)
+
+**Nao use** `--force-reset` / `--accept-data-loss` sem backup e ordem explicita.
+
+```bash
+cd ~/clinmax-api
+set -a && . ./.env && set +a
+# Confirme Postgres (nao sqlite):
+echo "$DATABASE_URL" | head -c 40
+npx prisma db push
+pm2 restart clinmax-api --update-env
+sleep 5
+curl -fsS http://127.0.0.1:3550/api/health
+curl -fsS http://127.0.0.1:3550/api/ready
+```
+
+Caminho permanente: migrations em `prisma/migrations/` (incl. `20260829030000_saas_plan_whatsapp_ai_prod`)
+via deploy GitHub / `npm run prod:migrate` (ou `node scripts/prod-migrate.cjs`).

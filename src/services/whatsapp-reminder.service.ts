@@ -86,9 +86,26 @@ export async function sendAppointmentReminder(
 }
 
 export async function runAutomaticReminders() {
-  const clinics = await prisma.clinicWhatsappSettings.findMany({
-    where: { autoRemindersEnabled: true },
-  })
+  // select enxuto: evita SELECT de aiMode/aiPermissionsJson em DB parcial (era db push)
+  let clinics: Array<{ clinicId: string; reminderOffsetsJson: string }>
+  try {
+    clinics = await prisma.clinicWhatsappSettings.findMany({
+      where: { autoRemindersEnabled: true },
+      select: { clinicId: true, reminderOffsetsJson: true },
+    })
+  } catch (err: unknown) {
+    const anyErr = err as { code?: string; message?: string }
+    const msg = String(anyErr?.message ?? err)
+    if (
+      anyErr?.code === "P2021" ||
+      anyErr?.code === "P2022" ||
+      /does not exist/i.test(msg)
+    ) {
+      console.warn("[WhatsApp reminders] schema incompleto — ciclo pulado:", msg.slice(0, 180))
+      return
+    }
+    throw err
+  }
 
   for (const settings of clinics) {
     let offsets: number[] = [24]
