@@ -232,11 +232,9 @@ async function createOne(ctx: AuthContext, data: CreateInput, date: Date) {
       insurancePlan: data.insurancePlan ?? "Particular",
       recurrence: data.recurrence ?? "NONE",
       notes,
-      generatePaymentLink: data.generatePaymentLink ?? false,
-      paymentLinkUrl: data.generatePaymentLink
-        ? `https://pay.clinichub.local/${Date.now()}`
-        : null,
-      paymentStatus: data.generatePaymentLink ? "PENDING" : "NONE",
+      generatePaymentLink: false,
+      paymentLinkUrl: null,
+      paymentStatus: "NONE",
       procedures: {
         create: procedures.map((p) => ({
           procedureId: p.procedureId,

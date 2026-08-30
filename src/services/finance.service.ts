@@ -6,6 +6,10 @@ import type {
   FinancialTransactionStatus,
   FinancialTransactionType,
 } from "@prisma/client"
+import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
+import { appointmentIncomeOriginKey } from "@/lib/clinmax-pay-ledger.js"
+import { applyPaidToAccountBalance, summarizeLedgerPeriod } from "@/lib/finance-ledger.js"
+import { writeAuditLog } from "@/lib/audit-log.js"
 
 const txInclude = {
   account: { select: { id: true, name: true } },
@@ -249,28 +253,24 @@ export async function getSummary(
     },
   })
 
-  let incomePaid = 0
-  let incomePending = 0
-  let expensePaid = 0
-  let expensePending = 0
   const byInsurance = new Map<string, number>()
   const byProcedureCategory = new Map<string, number>()
 
+  const periodSummary = summarizeLedgerPeriod(
+    transactions.map((tx) => ({
+      type: tx.type,
+      status: tx.status,
+      amount: decimalToNumber(tx.amount),
+    }))
+  )
+
   for (const tx of transactions) {
     const amount = decimalToNumber(tx.amount)
-    if (tx.type === "TRANSFER") continue
-
-    if (tx.type === "INCOME") {
-      if (tx.status === "PAID") incomePaid += amount
-      else incomePending += amount
-      const key = tx.insurancePlan || "Particular"
-      byInsurance.set(key, (byInsurance.get(key) ?? 0) + amount)
-      const cat = tx.category?.name ?? "Sem categoria"
-      byProcedureCategory.set(cat, (byProcedureCategory.get(cat) ?? 0) + amount)
-    } else if (tx.type === "EXPENSE") {
-      if (tx.status === "PAID") expensePaid += amount
-      else expensePending += amount
-    }
+    if (tx.type !== "INCOME" || tx.status !== "PAID") continue
+    const key = tx.insurancePlan || "Particular"
+    byInsurance.set(key, (byInsurance.get(key) ?? 0) + amount)
+    const cat = tx.category?.name ?? "Sem categoria"
+    byProcedureCategory.set(cat, (byProcedureCategory.get(cat) ?? 0) + amount)
   }
 
   const accounts = await prisma.financialAccount.findMany({
@@ -281,24 +281,24 @@ export async function getSummary(
     where: {
       clinicId: ctx.clinicId,
       status: "PAID",
-      type: { not: "TRANSFER" },
     },
     select: { type: true, amount: true, accountId: true, transferFromId: true, transferToId: true },
   })
 
-  const accountBalances = accounts.map((acc) => {
-    let balance = decimalToNumber(acc.initialBalance)
-    for (const tx of allPaid) {
-      const amount = decimalToNumber(tx.amount)
-      if (tx.type === "INCOME" && tx.accountId === acc.id) balance += amount
-      if (tx.type === "EXPENSE" && tx.accountId === acc.id) balance -= amount
-      if (tx.type === "TRANSFER") {
-        if (tx.transferFromId === acc.id) balance -= amount
-        if (tx.transferToId === acc.id) balance += amount
-      }
-    }
-    return { id: acc.id, name: acc.name, balance }
-  })
+  const ledgerPaid = allPaid.map((tx) => ({
+    type: tx.type,
+    status: "PAID" as const,
+    amount: decimalToNumber(tx.amount),
+    accountId: tx.accountId,
+    transferFromId: tx.transferFromId,
+    transferToId: tx.transferToId,
+  }))
+
+  const accountBalances = accounts.map((acc) => ({
+    id: acc.id,
+    name: acc.name,
+    balance: applyPaidToAccountBalance(decimalToNumber(acc.initialBalance), ledgerPaid, acc.id),
+  }))
 
   const generalBalance = accountBalances.reduce((sum, a) => sum + a.balance, 0)
 
@@ -306,11 +306,11 @@ export async function getSummary(
     period: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
     balance: generalBalance,
     accounts: accountBalances,
-    incomePaid,
-    incomePending,
-    expensePaid,
-    expensePending,
-    balancePeriod: incomePaid - expensePaid,
+    incomePaid: periodSummary.incomePaid,
+    incomePending: periodSummary.incomePending,
+    expensePaid: periodSummary.expensePaid,
+    expensePending: periodSummary.expensePending,
+    balancePeriod: periodSummary.balancePeriod,
     byInsurance: [...byInsurance.entries()].map(([label, value]) => ({ label, value })),
     byCategory: [...byProcedureCategory.entries()].map(([label, value]) => ({ label, value })),
     recentTransactions: await listTransactions(ctx, {
@@ -347,6 +347,13 @@ export async function createTransaction(
   await ensureDefaultFinanceSetup(ctx.clinicId)
 
   if (data.amount <= 0) throw new Error("INVALID_AMOUNT")
+
+  if (data.accountId) await assertClinicEntity(ctx.clinicId, "account", data.accountId)
+  if (data.transferFromId) await assertClinicEntity(ctx.clinicId, "account", data.transferFromId)
+  if (data.transferToId) await assertClinicEntity(ctx.clinicId, "account", data.transferToId)
+  if (data.categoryId) await assertClinicEntity(ctx.clinicId, "category", data.categoryId)
+  if (data.costCenterId) await assertClinicEntity(ctx.clinicId, "costCenter", data.costCenterId)
+  if (data.paymentMethodId) await assertClinicEntity(ctx.clinicId, "paymentMethod", data.paymentMethodId)
 
   if (data.type === "TRANSFER") {
     if (!data.transferFromId || !data.transferToId) throw new Error("TRANSFER_ACCOUNTS_REQUIRED")
@@ -412,6 +419,17 @@ export async function updateTransactionStatus(
     include: txInclude,
   })
 
+  await writeAuditLog({
+    clinicId: ctx.clinicId,
+    userId: ctx.userId,
+    module: "finance",
+    action: "transaction-status",
+    description: `Status do lancamento alterado para ${status}`,
+    entityType: "FinancialTransaction",
+    entityId: id,
+    metadata: { previousStatus: existing.status, newStatus: status, amount: moneyFromUnknown(existing.amount) },
+  })
+
   return serializeTransaction(row)
 }
 
@@ -425,6 +443,84 @@ export async function deleteTransaction(ctx: AuthContext, id: string) {
     where: { id },
     data: { status: "CANCELLED" },
   })
+  await writeAuditLog({
+    clinicId: ctx.clinicId,
+    userId: ctx.userId,
+    module: "finance",
+    action: "transaction-cancelled",
+    description: "Lancamento financeiro cancelado",
+    entityType: "FinancialTransaction",
+    entityId: id,
+    metadata: { previousStatus: existing.status, amount: moneyFromUnknown(existing.amount) },
+  })
+}
+
+export async function syncAppointmentIncome(input: {
+  clinicId: string
+  appointmentId: string
+  createdById: string
+  amount: number
+  description: string
+  patientId?: string | null
+  doctorId?: string | null
+  procedureId?: string | null
+  notes?: string | null
+  paymentMethodId?: string | null
+}) {
+  const amount = roundMoney(input.amount)
+  if (amount < 0.01) return null
+
+  await ensureDefaultFinanceSetup(input.clinicId)
+  const originKey = appointmentIncomeOriginKey(input.appointmentId)
+  const existing = await prisma.financialTransaction.findUnique({ where: { originKey } })
+  if (existing) return existing
+
+  const settings = await prisma.clinicFinanceSettings.findUnique({ where: { clinicId: input.clinicId } })
+  const account =
+    (settings?.defaultAccountId
+      ? await prisma.financialAccount.findFirst({
+          where: { id: settings.defaultAccountId, clinicId: input.clinicId, active: true },
+        })
+      : null) ||
+    (await prisma.financialAccount.findFirst({
+      where: { clinicId: input.clinicId, active: true },
+      orderBy: { createdAt: "asc" },
+    }))
+  const category = await prisma.financialCategory.findFirst({
+    where: { clinicId: input.clinicId, kind: "INCOME", name: { contains: "Consulta" } },
+  })
+  if (!account) return null
+
+  try {
+    return await prisma.financialTransaction.create({
+      data: {
+        clinicId: input.clinicId,
+        type: "INCOME",
+        status: "PAID",
+        description: input.description,
+        amount,
+        date: new Date(),
+        paidAt: new Date(),
+        accountId: account.id,
+        categoryId: category?.id ?? null,
+        costCenterId: settings?.defaultCostCenterId ?? null,
+        paymentMethodId: input.paymentMethodId ?? settings?.defaultPaymentMethodId ?? null,
+        patientId: input.patientId ?? null,
+        doctorId: input.doctorId ?? null,
+        procedureId: input.procedureId ?? null,
+        appointmentId: input.appointmentId,
+        notes: input.notes ?? null,
+        originKey,
+        createdById: input.createdById,
+      },
+    })
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code === "P2002") {
+      return prisma.financialTransaction.findUnique({ where: { originKey } })
+    }
+    throw err
+  }
 }
 
 export async function getCashFlow(

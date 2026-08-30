@@ -1100,6 +1100,7 @@ model FinancialTransaction {
   appointmentId   String?
   insurancePlan   String?
   notes           String?
+  originKey       String?                   @unique
   createdById     String
   createdAt       DateTime                   @default(now())
   updatedAt       DateTime                   @updatedAt
@@ -1244,6 +1245,7 @@ model ClinicSubscription {
   courtesyUntil        DateTime?
   asaasCustomerId      String?
   asaasSubscriptionId  String?
+  requestedPlanSlug    String?
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
   clinic               Clinic                 @relation(fields: [clinicId], references: [id], onDelete: Cascade)
@@ -1298,7 +1300,7 @@ model ClinicUsagePeriod {
 model PlatformSettings {
   id                  String   @id @default("platform")
   defaultPlanId       String?
-  defaultTrialDays    Int      @default(14)
+  defaultTrialDays    Int      @default(0)
   gracePeriodDays     Int      @default(3)
   currency            String   @default("BRL")
   billingEmail        String?

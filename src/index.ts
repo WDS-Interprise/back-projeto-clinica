@@ -46,6 +46,7 @@ import { runSubscriptionLifecycle } from "@/services/subscription-lifecycle.serv
 import { JWT_SECRET, PORT } from "@/lib/env.js"
 import { resolveCorsOrigins } from "@/lib/cors.js"
 import { startWhatsappScheduler } from "@/whatsapp/reminder.scheduler.js"
+import { startBillingScheduler } from "@/services/billing.scheduler.js"
 import { resumeWhatsappSessionsOnBoot } from "@/services/whatsapp.service.js"
 
 const app = Fastify({
@@ -234,4 +235,5 @@ app.listen({ port: PORT, host: "0.0.0.0" }).then(async () => {
     console.warn("[WhatsApp] resume on boot failed:", err)
   })
   startWhatsappScheduler()
+  startBillingScheduler()
 })

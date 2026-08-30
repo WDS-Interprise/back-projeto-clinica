@@ -2,7 +2,7 @@ import type { PixKeyType, PlatformPayoutStatus } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
 import { CLINMAX_PAY_FEE_PERCENT, isAsaasConfigured } from "@/lib/env.js"
 import * as asaas from "@/lib/asaas.client.js"
-import { moneyFromUnknown, roundMoney, toCents, fromCents } from "@/lib/money.js"
+import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
 import {
   detectPixKeyType,
   maskPixKey,
@@ -12,6 +12,10 @@ import {
 } from "@/lib/pix-key.js"
 import type { AuthContext } from "@/types/index.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
+import { computeClinmaxPayLedger } from "@/lib/clinmax-pay-ledger.js"
+import { assertAsaasWebhookToken } from "@/lib/asaas-webhook-auth.js"
+import { syncAppointmentIncome } from "@/services/finance.service.js"
+import { ASAAS_WEBHOOK_TOKEN } from "@/lib/env.js"
 
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10)
@@ -250,46 +254,102 @@ async function ensureAsaasCustomer(patient: {
 export async function receiptAppointment(ctx: AuthContext, appointmentId: string) {
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, clinicId: ctx.clinicId },
-    include: { billing: true },
+    include: {
+      billing: true,
+      procedures: { select: { procedureId: true }, take: 1 },
+    },
   })
   if (!appointment) throw new Error("NOT_FOUND")
-  return prisma.appointmentBilling.upsert({
+
+  const billing = await prisma.appointmentBilling.upsert({
     where: { appointmentId },
-    create: { appointmentId, billingStatus: "RECEIVED", receivedAt: new Date() },
+    create: {
+      appointmentId,
+      billingStatus: "RECEIVED",
+      receivedAt: new Date(),
+      chargedAmount: appointment.billing?.totalAmount ?? 0,
+    },
     update: { billingStatus: "RECEIVED", receivedAt: new Date() },
   })
+
+  const payReceived = await prisma.platformPayment.findFirst({
+    where: { appointmentId, clinicId: ctx.clinicId, status: { in: ["RECEIVED"] } },
+    select: { id: true },
+  })
+  if (!payReceived) {
+    const amount = moneyFromUnknown(appointment.billing?.chargedAmount || appointment.billing?.totalAmount)
+    await syncAppointmentIncome({
+      clinicId: ctx.clinicId,
+      appointmentId,
+      createdById: ctx.userId,
+      amount,
+      description: "Recebimento de consulta",
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      procedureId: appointment.procedures[0]?.procedureId ?? null,
+      notes: `receipt:${appointmentId}`,
+    })
+  }
+
+  await writeAuditLog({
+    clinicId: ctx.clinicId,
+    userId: ctx.userId,
+    module: "finance",
+    action: "appointment-receipt",
+    description: "Consulta marcada como recebida",
+    entityType: "Appointment",
+    entityId: appointmentId,
+  })
+  return billing
 }
 
-export async function handleAsaasWebhook(body: Record<string, unknown>, token: string | undefined) {
-  const expected = process.env.ASAAS_WEBHOOK_TOKEN || ""
-  if (expected && token !== expected) throw new Error("WEBHOOK_UNAUTHORIZED")
+export async function handleAsaasWebhook(
+  body: Record<string, unknown>,
+  token: string | undefined,
+  opts?: { alreadyRecorded?: boolean }
+) {
+  if (!opts?.alreadyRecorded) {
+    assertAsaasWebhookToken(token, ASAAS_WEBHOOK_TOKEN)
+  }
 
   const event = String(body.event || "")
   const payment = body.payment as { id?: string } | undefined
   const transfer = body.transfer as { id?: string; status?: string; externalReference?: string; failReason?: string } | undefined
   const eventKey = String(body.id || `${event}:${payment?.id || transfer?.id || "unknown"}`)
 
-  try {
-    await prisma.asaasWebhookEvent.create({ data: { eventKey, event } })
-  } catch {
-    return { ok: true, duplicate: true }
+  if (!opts?.alreadyRecorded) {
+    try {
+      await prisma.asaasWebhookEvent.create({ data: { eventKey, event } })
+    } catch {
+      return { ok: true, duplicate: true }
+    }
   }
 
   try {
-    if (event === "PAYMENT_CONFIRMED" && payment?.id) {
-      await markPaymentConfirmed(payment.id)
-    } else if (event === "PAYMENT_RECEIVED" && payment?.id) {
-      await processPaymentReceived(payment.id)
-    } else if ((event === "PAYMENT_REFUNDED" || event === "PAYMENT_DELETED") && payment?.id) {
-      await processPaymentRefund(payment.id)
-    } else if (event.startsWith("TRANSFER_") && transfer?.id) {
-      await processTransferEvent(transfer)
-    }
-    return { ok: true }
+    return await processPayWebhookEvent(event, payment, transfer)
   } catch (err) {
-    await prisma.asaasWebhookEvent.deleteMany({ where: { eventKey } })
+    if (!opts?.alreadyRecorded) {
+      await prisma.asaasWebhookEvent.deleteMany({ where: { eventKey } })
+    }
     throw err
   }
+}
+
+export async function processPayWebhookEvent(
+  event: string,
+  payment?: { id?: string },
+  transfer?: { id?: string; status?: string; externalReference?: string; failReason?: string }
+) {
+  if (event === "PAYMENT_CONFIRMED" && payment?.id) {
+    await markPaymentConfirmed(payment.id)
+  } else if (event === "PAYMENT_RECEIVED" && payment?.id) {
+    await processPaymentReceived(payment.id)
+  } else if ((event === "PAYMENT_REFUNDED" || event === "PAYMENT_DELETED") && payment?.id) {
+    await processPaymentRefund(payment.id)
+  } else if (event.startsWith("TRANSFER_") && transfer?.id) {
+    await processTransferEvent(transfer)
+  }
+  return { ok: true, domain: "clinmax-pay" as const }
 }
 
 async function markPaymentConfirmed(asaasPaymentId: string) {
@@ -306,32 +366,37 @@ async function processPaymentReceived(asaasPaymentId: string) {
     include: { payout: true, clinic: { include: { pixRecipient: true } } },
   })
   if (!payment) return
-  if (payment.status === "RECEIVED" && payment.payout) return
   if (payment.status === "REFUNDED") return
 
   const recipient = payment.clinic.pixRecipient
   if (!recipient) throw new Error("PIX_NOT_CONFIGURED")
 
+  if (payment.status === "RECEIVED") {
+    await ensurePayoutDispatched(payment, recipient)
+    return
+  }
+
   const amountGross = moneyFromUnknown(remote.value ?? payment.amountGross)
   const netAmount = moneyFromUnknown(remote.netValue ?? amountGross)
-  const gatewayFee = roundMoney(Math.max(0, amountGross - netAmount))
   const feePercent = moneyFromUnknown(recipient.platformFeePercent) || CLINMAX_PAY_FEE_PERCENT
-  const platformFee = fromCents(Math.round((toCents(netAmount) * feePercent) / 100))
-  let clinicShare = roundMoney(netAmount - platformFee)
   const outstanding = moneyFromUnknown(recipient.outstandingDebit)
-  const compensation = roundMoney(Math.min(outstanding, clinicShare))
-  const clinicPayoutAmount = roundMoney(clinicShare - compensation)
+  const ledger = computeClinmaxPayLedger({
+    amountGross,
+    netAmount,
+    feePercent,
+    outstandingDebit: outstanding,
+  })
 
   await prisma.$transaction(async (tx) => {
     await tx.platformPayment.update({
       where: { id: payment.id },
       data: {
-        amountGross,
-        gatewayFee,
-        netAmount,
-        platformFee,
-        clinicPayoutAmount,
-        compensationApplied: compensation,
+        amountGross: ledger.amountGross,
+        gatewayFee: ledger.gatewayFee,
+        netAmount: ledger.netAmount,
+        platformFee: ledger.platformFee,
+        clinicPayoutAmount: ledger.clinicPayoutAmount,
+        compensationApplied: ledger.compensation,
         status: "RECEIVED",
         receivedAt: new Date(),
       },
@@ -340,20 +405,41 @@ async function processPaymentReceived(asaasPaymentId: string) {
       where: { appointmentId: payment.appointmentId },
       data: { billingStatus: "RECEIVED", receivedAt: new Date(), chargedAmount: amountGross },
     })
-    if (compensation > 0) {
+    if (ledger.compensation > 0) {
       await tx.clinicPixRecipient.update({
         where: { clinicId: payment.clinicId },
-        data: { outstandingDebit: roundMoney(outstanding - compensation) },
+        data: { outstandingDebit: ledger.outstandingAfter },
       })
     }
   })
 
-  const existing = await prisma.platformPayout.findUnique({ where: { paymentId: payment.id } })
+  await ensurePayoutDispatched(
+    { ...payment, payout: payment.payout, clinicPayoutAmount: ledger.clinicPayoutAmount as unknown as typeof payment.clinicPayoutAmount },
+    recipient,
+    ledger.clinicPayoutAmount
+  )
+}
+
+async function ensurePayoutDispatched(
+  payment: {
+    id: string
+    clinicId: string
+    payout: { id: string; status: PlatformPayoutStatus; asaasTransferId: string | null } | null
+    clinicPayoutAmount?: unknown
+  },
+  recipient: { pixKey: string; pixKeyType: PixKeyType },
+  clinicPayoutAmountOverride?: number
+) {
+  const clinicPayoutAmount =
+    clinicPayoutAmountOverride ?? moneyFromUnknown(payment.clinicPayoutAmount)
+  const existing = payment.payout ?? (await prisma.platformPayout.findUnique({ where: { paymentId: payment.id } }))
   if (existing) {
     if (existing.status === "PAID" || existing.status === "CANCELLED") return
     if (existing.asaasTransferId && existing.status === "PROCESSING") return
     if (clinicPayoutAmount >= 0.01) {
       await dispatchTransfer(existing.id, recipient, clinicPayoutAmount, payment.id)
+    } else {
+      await recordClinicIncome(payment.id)
     }
     return
   }
@@ -463,12 +549,24 @@ async function processPaymentRefund(asaasPaymentId: string) {
 
   const payout = payment.payout
   if (!payout || payout.status === "PENDING" || payout.status === "PROCESSING") {
+    let cancelFailed = false
     if (payout?.asaasTransferId && payout.status !== "PAID") {
       try {
         await asaas.cancelTransfer(payout.asaasTransferId)
       } catch {
-        // se já saiu, cai na compensação abaixo
+        cancelFailed = true
       }
+    }
+    if (cancelFailed && payout) {
+      const amount = moneyFromUnknown(payout.amount)
+      if (amount > 0) {
+        const current = moneyFromUnknown(payment.clinic.pixRecipient?.outstandingDebit)
+        await prisma.clinicPixRecipient.update({
+          where: { clinicId: payment.clinicId },
+          data: { outstandingDebit: roundMoney(current + amount) },
+        })
+      }
+      return
     }
     if (payout) {
       await prisma.platformPayout.update({
@@ -498,49 +596,24 @@ async function recordClinicIncome(paymentId: string) {
   })
   if (!payment?.payout || moneyFromUnknown(payment.payout.amount) < 0.01) return
 
-  const already = await prisma.financialTransaction.findFirst({
-    where: { appointmentId: payment.appointmentId, notes: `clinmax-pay:${payment.id}` },
-  })
-  if (already) return
-
-  const settings = await prisma.clinicFinanceSettings.findUnique({ where: { clinicId: payment.clinicId } })
-  const account =
-    (settings?.defaultAccountId
-      ? await prisma.financialAccount.findFirst({ where: { id: settings.defaultAccountId } })
-      : null) ||
-    (await prisma.financialAccount.findFirst({
-      where: { clinicId: payment.clinicId, active: true },
-      orderBy: { createdAt: "asc" },
-    }))
   const pixMethod = await prisma.paymentMethod.findFirst({
     where: { clinicId: payment.clinicId, name: { contains: "PIX" } },
-  })
-  const category = await prisma.financialCategory.findFirst({
-    where: { clinicId: payment.clinicId, kind: "INCOME", name: { contains: "Consulta" } },
   })
   const admin = await prisma.userClinic.findFirst({
     where: { clinicId: payment.clinicId, active: true },
     select: { userId: true },
   })
-  if (!account || !admin) return
+  if (!admin) return
 
-  await prisma.financialTransaction.create({
-    data: {
-      clinicId: payment.clinicId,
-      type: "INCOME",
-      status: "PAID",
-      description: "Recebimento ClinMax Pay",
-      amount: moneyFromUnknown(payment.payout.amount),
-      date: new Date(),
-      paidAt: new Date(),
-      accountId: account.id,
-      categoryId: category?.id,
-      paymentMethodId: pixMethod?.id ?? settings?.defaultPaymentMethodId,
-      patientId: payment.appointment.patientId,
-      doctorId: payment.appointment.doctorId,
-      appointmentId: payment.appointmentId,
-      notes: `clinmax-pay:${payment.id}`,
-      createdById: admin.userId,
-    },
+  await syncAppointmentIncome({
+    clinicId: payment.clinicId,
+    appointmentId: payment.appointmentId,
+    createdById: admin.userId,
+    amount: moneyFromUnknown(payment.payout.amount),
+    description: "Recebimento ClinMax Pay",
+    patientId: payment.appointment.patientId,
+    doctorId: payment.appointment.doctorId,
+    notes: `clinmax-pay:${payment.id}`,
+    paymentMethodId: pixMethod?.id ?? null,
   })
 }

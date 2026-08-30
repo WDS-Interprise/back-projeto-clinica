@@ -9,9 +9,12 @@ import {
 import { computeTrialEnd } from "@/lib/plan-entitlements.js"
 import {
   COMMERCIAL_PLANS,
+  DEFAULT_SIGNUP_PLAN_SLUG,
   PLAN_CATALOG_VERSION,
   isCommercialPlanSlug,
 } from "@/lib/plan-catalog.js"
+import { moneyFromUnknown } from "@/lib/money.js"
+import { addMonths } from "date-fns"
 
 function parseSettingsJson(raw: string | null | undefined): Record<string, unknown> {
   try {
@@ -113,13 +116,13 @@ export async function ensurePlatformPlansAndSettings() {
       })
     }
 
-    const prof = await prisma.plan.findUnique({ where: { slug: "profissional" } })
+    const essencial = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
     await prisma.platformSettings.update({
       where: { id: "platform" },
-      data: { defaultPlanId: prof?.id ?? legacy.id },
+      data: { defaultPlanId: essencial?.id ?? legacy.id },
     })
 
-    return { legacyPlanId: legacy.id, defaultPlanId: prof?.id ?? legacy.id }
+    return { legacyPlanId: legacy.id, defaultPlanId: essencial?.id ?? legacy.id }
   } catch (err) {
     if (isMissingSchemaError(err)) {
       console.warn(
@@ -138,11 +141,14 @@ export async function ensureClinicSubscription(
   const existing = await prisma.clinicSubscription.findUnique({ where: { clinicId } })
   if (existing) return existing
 
+  // planSlug da landing e intencao de compra, nao o plano ativo.
+  // Clinica nova sempre comeca no Essencial (salvo planId explicito para Legacy/testes).
+
   const settings = await prisma.platformSettings.findUnique({ where: { id: "platform" } })
   let planId = opts?.planId
-  if (!planId && opts?.planSlug && isCommercialPlanSlug(opts.planSlug)) {
-    const chosen = await prisma.plan.findUnique({ where: { slug: opts.planSlug } })
-    planId = chosen?.id
+  if (!planId) {
+    const essencial = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
+    planId = essencial?.id
   }
   if (!planId) planId = settings?.defaultPlanId ?? undefined
   if (!planId) {
@@ -159,8 +165,13 @@ export async function ensureClinicSubscription(
   const now = new Date()
   const trialEnds = trialDays > 0 ? computeTrialEnd(now, trialDays) : null
   const status = isLegacy ? "ACTIVE" : trialDays > 0 ? "TRIAL" : "ACTIVE"
+  const periodEnd = trialEnds ?? (isLegacy ? null : addMonths(now, 1))
+  const requestedPlanSlug =
+    opts?.planSlug && isCommercialPlanSlug(opts.planSlug) && opts.planSlug !== DEFAULT_SIGNUP_PLAN_SLUG
+      ? opts.planSlug
+      : null
 
-  return prisma.clinicSubscription.create({
+  const created = await prisma.clinicSubscription.create({
     data: {
       clinicId,
       planId: plan.id,
@@ -170,10 +181,20 @@ export async function ensureClinicSubscription(
       trialStartedAt: trialDays > 0 ? now : null,
       trialEndsAt: trialEnds,
       currentPeriodStart: now,
-      currentPeriodEnd: trialEnds,
+      currentPeriodEnd: periodEnd,
+      requestedPlanSlug,
     },
     include: { plan: true },
   })
+
+  if (!isLegacy && moneyFromUnknown(plan.monthlyPrice) > 0) {
+    const { issueCommercialInvoice } = await import("@/services/subscription-billing.service.js")
+    await issueCommercialInvoice(created.id, `signup:${created.billingCycle}`).catch((err) => {
+      console.warn("[SaaS Billing] invoice inicial nao gerada:", err)
+    })
+  }
+
+  return created
 }
 
 /** Associa plano legacy a todas as clínicas sem assinatura. */

@@ -5,10 +5,11 @@ import {
 } from "@/lib/plan-features.js"
 
 /** Subir este número força o seed a reaplicar o pacote comercial nos slugs públicos. */
-export const PLAN_CATALOG_VERSION = 3
+export const PLAN_CATALOG_VERSION = 4
 
 export const COMMERCIAL_PLAN_SLUGS = ["essencial", "profissional", "premium"] as const
 export type CommercialPlanSlug = (typeof COMMERCIAL_PLAN_SLUGS)[number]
+export const DEFAULT_SIGNUP_PLAN_SLUG: CommercialPlanSlug = "essencial"
 
 export type ComparisonKind = "feature" | "limit"
 
@@ -190,6 +191,25 @@ export function getCommercialPlan(slug: string) {
 
 export function isCommercialPlanSlug(slug: string): slug is CommercialPlanSlug {
   return (COMMERCIAL_PLAN_SLUGS as readonly string[]).includes(slug)
+}
+
+export function commercialPlanRank(slug: string): number {
+  return (COMMERCIAL_PLAN_SLUGS as readonly string[]).indexOf(slug)
+}
+
+export function nextCommercialPlanSlug(fromSlug: string): CommercialPlanSlug | null {
+  if (!isCommercialPlanSlug(fromSlug)) return DEFAULT_SIGNUP_PLAN_SLUG
+  return COMMERCIAL_PLAN_SLUGS[commercialPlanRank(fromSlug) + 1] ?? null
+}
+
+export function isNextCommercialUpgrade(fromSlug: string, toSlug: string): boolean {
+  return nextCommercialPlanSlug(fromSlug) === toSlug
+}
+
+export function isCommercialRankUpgrade(fromSlug: string, toSlug: string): boolean {
+  if (!isCommercialPlanSlug(toSlug)) return false
+  if (!isCommercialPlanSlug(fromSlug)) return true
+  return commercialPlanRank(toSlug) > commercialPlanRank(fromSlug)
 }
 
 export function annualEquivalentMonthly(annualPrice: number) {

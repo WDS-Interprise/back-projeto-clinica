@@ -6,7 +6,7 @@ export async function getPlatformSettings() {
   if (!row) {
     return {
       defaultPlanId: null,
-      defaultTrialDays: 14,
+      defaultTrialDays: 0,
       gracePeriodDays: 3,
       currency: "BRL",
       billingEmail: null,
@@ -39,7 +39,7 @@ export async function updatePlatformSettings(
     create: {
       id: "platform",
       defaultPlanId: input.defaultPlanId ?? undefined,
-      defaultTrialDays: input.defaultTrialDays ?? 14,
+      defaultTrialDays: input.defaultTrialDays ?? 0,
       gracePeriodDays: input.gracePeriodDays ?? 3,
       currency: input.currency ?? "BRL",
       billingEmail: input.billingEmail ?? null,

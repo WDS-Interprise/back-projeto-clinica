@@ -1,6 +1,7 @@
 import prisma from "@/lib/prisma.js"
 import { startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, subWeeks } from "date-fns"
 import { appointmentDoctorFilter } from "@/lib/auth-context.js"
+import { doctorInClinicWhere } from "@/lib/doctor-clinic.js"
 import type { AuthContext } from "@/types/index.js"
 
 function clinicWhere(ctx: AuthContext) {
@@ -58,6 +59,7 @@ async function periodAttendance(ctx: AuthContext, start: Date, end: Date) {
     where: {
       clinicId: ctx.clinicId,
       type: "INCOME",
+      status: "PAID",
       date: { gte: start, lte: end },
     },
     _sum: { amount: true },
@@ -83,7 +85,7 @@ export async function getStats(ctx: AuthContext) {
           type: "SCHEDULE",
         },
       }),
-      prisma.doctor.count({ where: { available: true } }),
+      prisma.doctor.count({ where: { available: true, ...doctorInClinicWhere(ctx.clinicId) } }),
     ])
 
   return { totalPatients, totalAppointments, appointmentsToday, doctorsAvailable }

@@ -2,9 +2,13 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
   COMMERCIAL_PLANS,
+  DEFAULT_SIGNUP_PLAN_SLUG,
   annualEquivalentMonthly,
   formatComparisonValue,
   isCommercialPlanSlug,
+  isCommercialRankUpgrade,
+  isNextCommercialUpgrade,
+  nextCommercialPlanSlug,
 } from "./plan-catalog.js"
 import { parsePlanLimits, serializePlanLimits, mergeEntitlementLimits } from "./plan-features.js"
 
@@ -74,6 +78,18 @@ describe("catálogo comercial ClinMax", () => {
     const merged = mergeEntitlementLimits({ maxDoctors: 5, maxWhatsappConnections: 1 }, { maxDoctors: 7, maxWhatsappConnections: 2 })
     assert.equal(merged.maxDoctors, 12)
     assert.equal(merged.maxWhatsappConnections, 3)
+  })
+
+  it("cadastro comercial começa no Essencial e só sobe um degrau", () => {
+    assert.equal(DEFAULT_SIGNUP_PLAN_SLUG, "essencial")
+    assert.equal(nextCommercialPlanSlug("essencial"), "profissional")
+    assert.equal(nextCommercialPlanSlug("profissional"), "premium")
+    assert.equal(nextCommercialPlanSlug("premium"), null)
+    assert.equal(nextCommercialPlanSlug("legacy"), "essencial")
+    assert.equal(isNextCommercialUpgrade("essencial", "profissional"), true)
+    assert.equal(isNextCommercialUpgrade("essencial", "premium"), false)
+    assert.equal(isCommercialRankUpgrade("essencial", "premium"), true)
+    assert.equal(isCommercialRankUpgrade("premium", "essencial"), false)
   })
 
   it("compara recursos com o entitlement real", () => {

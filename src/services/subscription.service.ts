@@ -3,7 +3,13 @@ import prisma from "@/lib/prisma.js"
 import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
 import { parsePlanFeatures, parsePlanLimits, LEGACY_PLAN_SLUG } from "@/lib/plan-features.js"
+import {
+  isCommercialRankUpgrade,
+  isNextCommercialUpgrade,
+  nextCommercialPlanSlug,
+} from "@/lib/plan-catalog.js"
 import { computeTrialEnd, getClinicUsageSummary } from "@/lib/plan-entitlements.js"
+import { canRepairPastDueGhost } from "@/lib/subscription-lifecycle-rules.js"
 import * as billing from "@/services/subscription-billing.service.js"
 
 function presentSubscription(row: {
@@ -22,6 +28,7 @@ function presentSubscription(row: {
   courtesyUntil: Date | null
   asaasCustomerId: string | null
   asaasSubscriptionId: string | null
+  requestedPlanSlug?: string | null
   createdAt: Date
   updatedAt: Date
   plan: {
@@ -68,6 +75,7 @@ function presentSubscription(row: {
     courtesyUntil: row.courtesyUntil?.toISOString() ?? null,
     asaasCustomerId: row.asaasCustomerId,
     asaasSubscriptionId: row.asaasSubscriptionId,
+    requestedPlanSlug: row.requestedPlanSlug ?? null,
     nextBillingAt: row.currentPeriodEnd?.toISOString() ?? row.trialEndsAt?.toISOString() ?? null,
     lastPaymentAt: lastPaid?.paidAt?.toISOString() ?? null,
     pendingUpgrade: null as null | {
@@ -126,23 +134,18 @@ export async function getSubscriptionByClinicId(clinicId: string) {
   })
   if (!row) return null
 
-  if (row.status === "PAST_DUE") {
-    const paid = await prisma.subscriptionInvoice.findFirst({
-      where: { clinicSubscriptionId: row.id, status: "PAID" },
-      select: { id: true },
+  const invoiceCount = await prisma.subscriptionInvoice.count({ where: { clinicSubscriptionId: row.id } })
+  if (canRepairPastDueGhost({ status: row.status, invoiceCount })) {
+    const repaired = await prisma.clinicSubscription.update({
+      where: { id: row.id },
+      data: { status: "ACTIVE" },
+      include: {
+        plan: true,
+        clinic: { select: { id: true, name: true, active: true, createdAt: true } },
+        invoices: { orderBy: { dueDate: "desc" }, take: 12 },
+      },
     })
-    if (!paid) {
-      const repaired = await prisma.clinicSubscription.update({
-        where: { id: row.id },
-        data: { status: "ACTIVE" },
-        include: {
-          plan: true,
-          clinic: { select: { id: true, name: true, active: true, createdAt: true } },
-          invoices: { orderBy: { dueDate: "desc" }, take: 12 },
-        },
-      })
-      return attachPendingUpgrade(presentSubscription(repaired), repaired.invoices)
-    }
+    return attachPendingUpgrade(presentSubscription(repaired), repaired.invoices)
   }
 
   return attachPendingUpgrade(presentSubscription(row), row.invoices)
@@ -194,6 +197,7 @@ export async function changePlan(
       addressNumber: string
       phone: string
     }
+    allowNonSequential?: boolean
   }
 ) {
   const sub = await prisma.clinicSubscription.findUnique({
@@ -204,6 +208,12 @@ export async function changePlan(
   const plan = await prisma.plan.findUnique({ where: { id: planId } })
   if (!plan || !plan.active) throw new Error("PLAN_NOT_AVAILABLE")
 
+  const rankUpgrade = isCommercialRankUpgrade(sub.plan.slug, plan.slug)
+  if (rankUpgrade && !opts?.allowNonSequential && !isNextCommercialUpgrade(sub.plan.slug, plan.slug)) {
+    const nextSlug = nextCommercialPlanSlug(sub.plan.slug)
+    throw new Error(nextSlug ? `PLAN_UPGRADE_NOT_SEQUENTIAL:${nextSlug}` : "PLAN_UPGRADE_NOT_SEQUENTIAL")
+  }
+
   const billingCycle = opts?.billingCycle ?? sub.billingCycle
   const currentPrice =
     sub.billingCycle === "ANNUAL"
@@ -211,7 +221,8 @@ export async function changePlan(
       : moneyFromUnknown(sub.plan.monthlyPrice)
   const nextPrice =
     billingCycle === "ANNUAL" ? moneyFromUnknown(plan.annualPrice) : moneyFromUnknown(plan.monthlyPrice)
-  const isUpgrade = nextPrice > currentPrice && plan.slug !== LEGACY_PLAN_SLUG
+  const isUpgrade =
+    (nextPrice > currentPrice || rankUpgrade) && plan.slug !== LEGACY_PLAN_SLUG
 
   if (isUpgrade) {
     await billing.cancelPendingUpgradeInvoices(sub.id)
