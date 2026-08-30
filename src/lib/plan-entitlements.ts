@@ -54,6 +54,12 @@ async function loadSubscription(clinicId: string) {
   })
 }
 
+/**
+ * Precedencia de acesso comercial:
+ * Legacy (slug) -> cortesia -> status financeiro -> plano -> add-ons/overrides.
+ * SUSPENDED bloqueia so os modulos gated (WhatsApp, financeiro, TISS, estoque, IA).
+ * Login, agenda, pacientes e prontuario permanecem.
+ */
 async function subscriptionGrantsAccess(
   sub: NonNullable<Awaited<ReturnType<typeof loadSubscription>>>
 ): Promise<boolean> {

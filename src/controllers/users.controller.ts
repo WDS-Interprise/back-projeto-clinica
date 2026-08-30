@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify"
 import * as userService from "@/services/user.service.js"
 import type { JwtPayload } from "@/types/index.js"
+import { mapPlanErrorReply } from "@/lib/plan-entitlements.js"
 
 function clinicId(req: FastifyRequest) {
   const id = (req.user as JwtPayload).clinicId
@@ -40,6 +41,8 @@ export async function create(req: FastifyRequest, reply: FastifyReply) {
     })
     return reply.status(201).send(user)
   } catch (error: any) {
+    const mapped = mapPlanErrorReply(error)
+    if (mapped) return reply.status(mapped.status).send(mapped.body)
     if (error.code === "DUPLICATE_FIELDS") {
       return reply.status(409).send({
         error: error.message || "Dados ja cadastrados",

@@ -3,6 +3,7 @@ import { z } from "zod"
 import type { Role } from "@prisma/client"
 
 import * as inviteService from "@/services/invite.service.js"
+import { mapPlanErrorReply } from "@/lib/plan-entitlements.js"
 
 function handleError(req: FastifyRequest, reply: FastifyReply, error: any) {
   const code = error?.code
@@ -22,6 +23,8 @@ function handleError(req: FastifyRequest, reply: FastifyReply, error: any) {
       fields: error.fields ?? {},
     })
   }
+  const mapped = mapPlanErrorReply(error)
+  if (mapped) return reply.status(mapped.status).send(mapped.body)
   req.log.error(error)
   return reply.status(500).send({ error: "Erro interno do servidor" })
 }

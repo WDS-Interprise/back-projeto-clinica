@@ -273,6 +273,44 @@ export function parseUpgradeReference(reference: string | null | undefined) {
   return { planId, billingCycle: billingCycle as BillingCycle }
 }
 
+export async function issueCommercialInvoice(
+  subscriptionId: string,
+  reference: string,
+  description?: string
+) {
+  const sub = await prisma.clinicSubscription.findUnique({
+    where: { id: subscriptionId },
+    include: { plan: true },
+  })
+  if (!sub) return null
+  const amount = planPrice(sub.plan, sub.billingCycle)
+  if (amount <= 0) return null
+
+  const open = await prisma.subscriptionInvoice.findFirst({
+    where: { clinicSubscriptionId: subscriptionId, status: { in: ["PENDING", "OVERDUE"] } },
+  })
+  if (open) return open
+
+  try {
+    return await createManualInvoice(subscriptionId, addDays(new Date(), 3), {
+      reference,
+      description: description ?? `Mensalidade ClinMax: ${sub.plan.name}`,
+    })
+  } catch {
+    return prisma.subscriptionInvoice.create({
+      data: {
+        clinicSubscriptionId: sub.id,
+        clinicId: sub.clinicId,
+        amount,
+        status: "PENDING",
+        billingType: "MANUAL",
+        dueDate: addDays(new Date(), 3),
+        reference,
+      },
+    })
+  }
+}
+
 export async function ensurePendingPaymentForSubscription(subscriptionId: string) {
   const pending = await prisma.subscriptionInvoice.findFirst({
     where: { clinicSubscriptionId: subscriptionId, status: { in: ["PENDING", "OVERDUE"] } },
@@ -382,42 +420,70 @@ export async function handleSubscriptionPaymentWebhook(
     status = remote.status
   }
   const mapped = mapPaymentStatus(String(status || "PENDING"))
+  if (invoice.status === "PAID" && mapped === "PAID") {
+    await syncAsaasSubscription(invoice.clinicSubscriptionId).catch((err) => {
+      console.warn("[SaaS Billing] syncAsaasSubscription after PAID failed:", err)
+    })
+    return { handled: true, invoiceId: invoice.id, status: mapped, duplicate: true }
+  }
+  const previousStatus = invoice.status
 
-  await prisma.subscriptionInvoice.update({
-    where: { id: invoice.id },
-    data: {
-      status: mapped,
-      paidAt: mapped === "PAID" ? new Date() : invoice.paidAt,
-    },
-  })
-
-  const sub = invoice.subscription
-  const now = new Date()
-
-  if (mapped === "PAID") {
-    const upgrade = parseUpgradeReference(invoice.reference)
-    const periodCycle = upgrade?.billingCycle ?? sub.billingCycle
-    const nextEnd = periodCycle === "ANNUAL" ? addYears(now, 1) : addMonths(now, 1)
-    await prisma.clinicSubscription.update({
-      where: { id: sub.id },
+  await prisma.$transaction(async (tx) => {
+    await tx.subscriptionInvoice.update({
+      where: { id: invoice.id },
       data: {
-        status: "ACTIVE",
-        ...(upgrade
-          ? { planId: upgrade.planId, billingCycle: upgrade.billingCycle }
-          : {}),
-        currentPeriodStart: now,
-        currentPeriodEnd: nextEnd,
-        cancelAtPeriodEnd: false,
+        status: mapped,
+        paidAt: mapped === "PAID" ? new Date() : invoice.paidAt,
       },
     })
-  } else if (mapped === "OVERDUE") {
-    const upgrade = parseUpgradeReference(invoice.reference)
-    if (!upgrade) {
-      await prisma.clinicSubscription.update({
+
+    const sub = invoice.subscription
+    const now = new Date()
+
+    if (mapped === "PAID") {
+      const upgrade = parseUpgradeReference(invoice.reference)
+      const periodCycle = upgrade?.billingCycle ?? sub.billingCycle
+      const nextEnd = periodCycle === "ANNUAL" ? addYears(now, 1) : addMonths(now, 1)
+      await tx.clinicSubscription.update({
         where: { id: sub.id },
-        data: { status: "PAST_DUE" },
+        data: {
+          status: "ACTIVE",
+          ...(upgrade
+            ? { planId: upgrade.planId, billingCycle: upgrade.billingCycle }
+            : {}),
+          currentPeriodStart: now,
+          currentPeriodEnd: nextEnd,
+          cancelAtPeriodEnd: false,
+        },
       })
+    } else if (mapped === "OVERDUE") {
+      const upgrade = parseUpgradeReference(invoice.reference)
+      if (!upgrade) {
+        await tx.clinicSubscription.update({
+          where: { id: sub.id },
+          data: { status: "PAST_DUE" },
+        })
+      }
     }
+  })
+
+  console.log(
+    JSON.stringify({
+      event: "subscription-invoice-status",
+      clinicId: invoice.clinicId,
+      subscriptionId: invoice.clinicSubscriptionId,
+      invoiceId: invoice.id,
+      asaasPaymentId,
+      previousStatus,
+      newStatus: mapped,
+      amount: moneyFromUnknown(invoice.amount),
+    })
+  )
+
+  if (mapped === "PAID") {
+    await syncAsaasSubscription(invoice.clinicSubscriptionId).catch((err) => {
+      console.warn("[SaaS Billing] syncAsaasSubscription after PAID failed:", err)
+    })
   }
 
   return { handled: true, invoiceId: invoice.id, status: mapped }

@@ -66,7 +66,12 @@ export async function changeSubscriptionPlan(req: FastifyRequest, reply: Fastify
   const { id } = req.params as { id: string }
   const body = req.body as { planId: string; billingCycle?: BillingCycle }
   try {
-    return reply.send(await subscriptionService.changePlan(id, body.planId, ownerId(req), { billingCycle: body.billingCycle }))
+    return reply.send(
+      await subscriptionService.changePlan(id, body.planId, ownerId(req), {
+        billingCycle: body.billingCycle,
+        allowNonSequential: true,
+      })
+    )
   } catch {
     return reply.status(400).send({ error: "Não foi possível alterar o plano" })
   }
@@ -233,10 +238,19 @@ export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply)
     )
     return reply.send(sub)
   } catch (err) {
+    const raw = err instanceof Error ? err.message : ""
+    const sequential = raw.startsWith("PLAN_UPGRADE_NOT_SEQUENTIAL")
+    const nextSlug = sequential && raw.includes(":") ? raw.split(":")[1] : ""
+    const nextName =
+      nextSlug === "profissional" ? "Profissional" : nextSlug === "premium" ? "Premium" : nextSlug === "essencial" ? "Essencial" : ""
     const message =
       err instanceof billing.BillingRequirementError
         ? err.message
-        : err instanceof Error && err.message.toLowerCase().includes("cpf")
+        : sequential
+          ? nextName
+            ? `Só é possível subir um plano por vez. Assine o ${nextName} primeiro.`
+            : "Só é possível subir um plano por vez."
+        : raw.toLowerCase().includes("cpf")
           ? "Informe o CNPJ da clínica (ou o CPF do responsável) nas configurações para gerar o pagamento da assinatura."
           : "Não foi possível alterar o plano"
     req.log.error(err)

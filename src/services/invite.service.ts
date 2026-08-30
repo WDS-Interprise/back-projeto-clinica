@@ -10,6 +10,7 @@ import { getPermissionsForRole, getRedirectPath } from "@/lib/permissions.js"
 import { validatePassword } from "@/lib/password.js"
 import { validateRegisterData, validateUserCreate } from "@/lib/duplicate-validation.js"
 import { sendClinicInviteEmail, sendJoinRequestApprovedEmail, sendJoinRequestRejectedEmail } from "@/services/mail.service.js"
+import { assertClinicLimit } from "@/lib/plan-entitlements.js"
 import type { JwtPayload } from "@/types/index.js"
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -334,6 +335,11 @@ async function linkUserToClinic(
     })
   }
 
+  await assertClinicLimit(clinicId, "maxUsers")
+  if (role === "DOCTOR") {
+    await assertClinicLimit(clinicId, "maxDoctors")
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id: userId },
@@ -618,6 +624,11 @@ export async function acceptInviteToken(
 
   if (invite.role === "DOCTOR" && !data.crm?.trim()) {
     throw Object.assign(new Error("Informe o CRM"), { code: "CRM_REQUIRED" })
+  }
+
+  await assertClinicLimit(invite.clinic.id, "maxUsers")
+  if (invite.role === "DOCTOR") {
+    await assertClinicLimit(invite.clinic.id, "maxDoctors")
   }
 
   let userId = existingUserId
