@@ -220,6 +220,8 @@ export async function createEmailInvite(
     inviteUrl,
     inviteCode,
     invitedByName: invitedBy.name,
+    clinicLogoUrl: clinic.logoUrl,
+    clinicReplyTo: clinic.email,
   })
 
   if (!mailResult.delivered && "error" in mailResult && mailResult.error) {
@@ -533,7 +535,7 @@ export async function approveJoinRequest(
     where: { id: requestId, clinicId, status: "PENDING" },
     include: {
       user: { select: { id: true, name: true, email: true } },
-      clinic: { select: { name: true } },
+      clinic: { select: { name: true, email: true, logoUrl: true } },
     },
   })
   if (!request) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
@@ -562,6 +564,8 @@ export async function approveJoinRequest(
     userName: request.user.name,
     clinicName: request.clinic.name,
     roleLabel: ROLE_LABELS[role],
+    clinicLogoUrl: request.clinic.logoUrl,
+    clinicReplyTo: request.clinic.email,
   }).catch((err) => console.warn("[invite] E-mail de aprovação falhou:", err))
 
   return { ok: true }
@@ -572,7 +576,7 @@ export async function rejectJoinRequest(clinicId: string, requestId: string, rev
     where: { id: requestId, clinicId, status: "PENDING" },
     include: {
       user: { select: { id: true, name: true, email: true } },
-      clinic: { select: { name: true } },
+      clinic: { select: { name: true, email: true, logoUrl: true } },
     },
   })
   if (!request) throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" })
@@ -586,6 +590,8 @@ export async function rejectJoinRequest(clinicId: string, requestId: string, rev
     to: request.user.email,
     userName: request.user.name,
     clinicName: request.clinic.name,
+    clinicLogoUrl: request.clinic.logoUrl,
+    clinicReplyTo: request.clinic.email,
   }).catch((err) => console.warn("[invite] E-mail de rejeição falhou:", err))
 
   return { ok: true }

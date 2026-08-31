@@ -39,6 +39,12 @@ export async function update(req: FastifyRequest, reply: FastifyReply) {
     const clinic = await clinicService.update(id, req.body as any)
     return reply.send(clinic)
   } catch (error) {
+    const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined
+    if (code === "INVALID_LOGO") {
+      return reply.status(400).send({
+        error: error instanceof Error ? error.message : "Logo inválida",
+      })
+    }
     req.log.error(error)
     return reply.status(500).send({ error: "Erro ao atualizar clinica" })
   }

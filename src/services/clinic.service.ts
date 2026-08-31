@@ -1,3 +1,4 @@
+import { assertClinicLogoUrl } from "@/lib/clinic-logo.js"
 import prisma from "@/lib/prisma.js"
 
 export async function list() {
@@ -53,6 +54,7 @@ export async function update(
     addressZip?: string | null
   }>
 ) {
+  if ("logoUrl" in data) assertClinicLogoUrl(data.logoUrl)
   return prisma.clinic.update({ where: { id }, data })
 }
 
