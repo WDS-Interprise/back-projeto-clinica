@@ -1,4 +1,5 @@
 import type { InviteEmailImageRefs } from "@/lib/invite-email-assets.js"
+import { formatCompanyCopyright, formattedCompanyCnpj } from "@/lib/company-legal.js"
 
 export type ClinicInviteEmailContent = {
   clinicName: string
@@ -238,7 +239,8 @@ export function buildClinicInviteEmailHtml(
           <tr>
             <td align="center" style="padding:14px 8px 12px;border:0;">
               <p style="margin:0;font-size:10px;line-height:1.5;color:${COLORS.textMuted};max-width:480px;">
-                Este e-mail foi enviado pela plataforma ClinMax em nome de ${clinicName}. Se você não esperava esta mensagem, ignore.
+                Este e-mail foi enviado pela plataforma ClinMax (CNPJ ${formattedCompanyCnpj()}) em nome de ${clinicName}. Se você não esperava esta mensagem, ignore.
+                <br />${formatCompanyCopyright()}
               </p>
             </td>
           </tr>
@@ -286,5 +288,7 @@ export function buildClinicInviteEmailText(input: ClinicInviteEmailContent): str
     "",
     `${clinicName}`,
     "Gestão que transforma. Tecnologia que aproxima.",
+    "",
+    formatCompanyCopyright(),
   ].join("\n")
 }

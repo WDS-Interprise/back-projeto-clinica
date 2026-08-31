@@ -1,3 +1,4 @@
+import { clinicLogoCidAttachment } from "@/lib/clinic-logo.js"
 import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -17,10 +18,14 @@ export type InviteEmailImageRefs = {
 
 export type InviteEmailAttachment = {
   filename: string
-  path: string
   cid: string
   contentType: string
+  path?: string
+  content?: Buffer
 }
+
+export const INVITE_LOGO_CID = "invite-logo@clinmax"
+export const JOIN_LOGO_CID = "clinic-logo@clinmax"
 
 const CID = {
   logo: "invite-logo@clinmax",
@@ -67,7 +72,7 @@ export function getInviteEmailAttachments(): {
     {
       filename: "logo.png",
       path: assetPath("clinmax-logo-email.png"),
-      cid: CID.logo,
+      cid: INVITE_LOGO_CID,
       contentType: "image/png",
     },
     {
@@ -119,5 +124,50 @@ export function getInviteEmailAttachments(): {
       iconHeadset: cidRef(CID.iconHeadset),
       iconClock: cidRef(CID.iconClock),
     },
+  }
+}
+
+export function applyClinicLogoToInviteAttachments(
+  attachments: InviteEmailAttachment[],
+  clinicLogoUrl?: string | null,
+): InviteEmailAttachment[] {
+  const clinicLogo = clinicLogoCidAttachment(clinicLogoUrl, INVITE_LOGO_CID)
+  if (!clinicLogo) return attachments
+  return attachments.map((item) =>
+    item.cid === INVITE_LOGO_CID
+      ? {
+          filename: clinicLogo.filename,
+          content: clinicLogo.content,
+          cid: clinicLogo.cid,
+          contentType: clinicLogo.contentType,
+        }
+      : item,
+  )
+}
+
+export function getJoinEmailLogoAttachment(clinicLogoUrl?: string | null): {
+  attachment: InviteEmailAttachment
+  src: string
+} {
+  const clinicLogo = clinicLogoCidAttachment(clinicLogoUrl, JOIN_LOGO_CID)
+  if (clinicLogo) {
+    return {
+      attachment: {
+        filename: clinicLogo.filename,
+        content: clinicLogo.content,
+        cid: clinicLogo.cid,
+        contentType: clinicLogo.contentType,
+      },
+      src: cidRef(JOIN_LOGO_CID),
+    }
+  }
+  return {
+    attachment: {
+      filename: "logo.png",
+      path: assetPath("clinmax-logo-email.png"),
+      cid: JOIN_LOGO_CID,
+      contentType: "image/png",
+    },
+    src: cidRef(JOIN_LOGO_CID),
   }
 }

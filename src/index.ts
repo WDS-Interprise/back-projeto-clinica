@@ -51,6 +51,7 @@ import { resumeWhatsappSessionsOnBoot } from "@/services/whatsapp.service.js"
 
 const app = Fastify({
   logger: true,
+  bodyLimit: 2_000_000,
   genReqId: (req) => {
     const header = req.headers["x-request-id"]
     if (typeof header === "string" && header.trim()) return header.trim()

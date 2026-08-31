@@ -16,7 +16,7 @@
     "mail:invite": "node --env-file=.env --import tsx scripts/test-invite-mail.ts",
     "mail:icons": "node --import tsx scripts/build-email-icons.ts",
     "mail:hero": "node --import tsx scripts/build-email-hero.ts",
-    "test": "node --import tsx --test src/lib/plan-catalog.test.ts src/lib/clinmax-pay-ledger.test.ts src/lib/finance-ledger.test.ts src/lib/asaas-webhook-auth.test.ts src/lib/subscription-lifecycle-rules.test.ts src/domain/state-machines/state-machines.test.ts src/domain/audit/audit.test.ts src/domain/signature/signature-auth.test.ts src/domain/ops.test.ts scripts/validate-pm2-registration.test.cjs",
+    "test": "node --import tsx --test src/lib/plan-catalog.test.ts src/lib/clinmax-pay-ledger.test.ts src/lib/finance-ledger.test.ts src/lib/asaas-webhook-auth.test.ts src/lib/subscription-lifecycle-rules.test.ts src/lib/company-legal.test.ts src/lib/clinic-logo.test.ts src/domain/state-machines/state-machines.test.ts src/domain/audit/audit.test.ts src/domain/signature/signature-auth.test.ts src/domain/ops.test.ts scripts/validate-pm2-registration.test.cjs",
     "db:setup": "prisma db push && npm run db:seed",
     "db:studio": "prisma studio",
     "import:cid": "tsx src/scripts/import-cid.ts"
