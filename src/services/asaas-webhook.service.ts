@@ -3,6 +3,7 @@ import * as clinmaxPay from "@/services/clinmax-pay.service.js"
 import * as subscriptionBilling from "@/services/subscription-billing.service.js"
 import { ASAAS_WEBHOOK_TOKEN } from "@/lib/env.js"
 import { assertAsaasWebhookToken, routeAsaasWebhookDomain } from "@/lib/asaas-webhook-auth.js"
+import { pixQrTrackingId } from "@/lib/asaas.client.js"
 
 /**
  * Roteador central de webhooks Asaas.
@@ -12,7 +13,12 @@ export async function handleAsaasWebhook(body: Record<string, unknown>, token: s
   assertAsaasWebhookToken(token, ASAAS_WEBHOOK_TOKEN)
 
   const event = String(body.event || "")
-  const payment = body.payment as { id?: string; subscription?: string; externalReference?: string } | undefined
+  const payment = body.payment as {
+    id?: string
+    subscription?: string
+    externalReference?: string
+    pixQrCodeId?: string
+  } | undefined
   const transfer = body.transfer as { id?: string; status?: string; externalReference?: string; failReason?: string } | undefined
   const eventKey = String(body.id || `${event}:${payment?.id || transfer?.id || "unknown"}`)
 
@@ -23,18 +29,34 @@ export async function handleAsaasWebhook(body: Record<string, unknown>, token: s
   }
 
   try {
-    const [platformPayment, subscriptionInvoice] = payment?.id
+    const [platformPayment, subscriptionInvoice, invoiceByQr, invoiceByRef] = payment?.id
       ? await Promise.all([
           prisma.platformPayment.findUnique({ where: { asaasPaymentId: payment.id }, select: { id: true } }),
           prisma.subscriptionInvoice.findUnique({ where: { asaasPaymentId: payment.id }, select: { id: true } }),
+          payment.pixQrCodeId
+            ? prisma.subscriptionInvoice.findUnique({
+                where: { asaasPaymentId: pixQrTrackingId(payment.pixQrCodeId) },
+                select: { id: true },
+              })
+            : Promise.resolve(null),
+          payment.externalReference?.startsWith("upgrade:") ||
+          payment.externalReference?.startsWith("subscription:")
+            ? prisma.subscriptionInvoice.findFirst({
+                where: {
+                  reference: payment.externalReference,
+                  status: { in: ["PENDING", "OVERDUE"] },
+                },
+                select: { id: true },
+              })
+            : Promise.resolve(null),
         ])
-      : [null, null]
+      : [null, null, null, null]
 
     const domain = routeAsaasWebhookDomain({
       event,
       paymentId: payment?.id,
       hasPlatformPayment: Boolean(platformPayment),
-      hasSubscriptionInvoice: Boolean(subscriptionInvoice),
+      hasSubscriptionInvoice: Boolean(subscriptionInvoice || invoiceByQr || invoiceByRef),
       asaasSubscription: payment?.subscription,
       externalReference: payment?.externalReference,
       hasTransfer: Boolean(transfer?.id),
@@ -45,6 +67,15 @@ export async function handleAsaasWebhook(body: Record<string, unknown>, token: s
     }
 
     if (domain === "saas-billing" && payment?.id) {
+      console.log(
+        JSON.stringify({
+          event: "asaas-webhook-saas",
+          asaasEvent: event,
+          paymentId: payment.id,
+          pixQrCodeId: payment.pixQrCodeId ?? null,
+          externalReference: payment.externalReference ?? null,
+        })
+      )
       const payPayload = payment as Record<string, unknown>
       if (event === "PAYMENT_CONFIRMED") {
         await subscriptionBilling.handleSubscriptionPaymentConfirmed(payment.id)

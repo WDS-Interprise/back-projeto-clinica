@@ -66,5 +66,16 @@ describe("webhook Asaas", () => {
       }),
       "clinmax-pay"
     )
+    assert.equal(
+      routeAsaasWebhookDomain({
+        event: "PAYMENT_RECEIVED",
+        paymentId: "pay_static",
+        hasPlatformPayment: false,
+        hasSubscriptionInvoice: false,
+        externalReference: "upgrade:plan1:MONTHLY",
+        hasTransfer: false,
+      }),
+      "saas-billing"
+    )
   })
 })

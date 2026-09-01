@@ -39,7 +39,7 @@ export function routeAsaasWebhookDomain(input: {
     if (input.hasSubscriptionInvoice) return "saas-billing"
     const subRef = String(input.asaasSubscription ?? "")
     const extRef = String(input.externalReference ?? "")
-    if (subRef || extRef.startsWith("subscription:")) return "saas-billing"
+    if (subRef || extRef.startsWith("subscription:") || extRef.startsWith("upgrade:")) return "saas-billing"
     if (input.hasPlatformPayment) return "clinmax-pay"
   }
   if (input.event.startsWith("TRANSFER_") && input.hasTransfer) return "clinmax-pay"

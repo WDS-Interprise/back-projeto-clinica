@@ -202,7 +202,7 @@ export async function chargeAppointment(ctx: AuthContext, appointmentId: string,
     description: `Consulta ${appointment.patient.name}`,
     externalReference: appointmentId,
   })
-  const qr = await asaas.getPixQrCode(payment.id)
+  const qr = await asaas.getPixQrCodeReady(payment.id)
   const row = await prisma.platformPayment.create({
     data: {
       clinicId: ctx.clinicId,

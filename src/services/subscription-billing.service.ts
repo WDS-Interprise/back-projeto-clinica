@@ -194,32 +194,42 @@ export async function createManualInvoice(
         return invoice
       }
 
-      const payment = await asaas.createPixPayment({
-        customer: customerId,
-        value: amount,
-        dueDate: due.toISOString().slice(0, 10),
-        description,
-        externalReference: reference ?? `subscription-invoice:${sub.id}:${Date.now()}`,
-      })
-      let qr: { encodedImage?: string; payload?: string } = {}
       try {
-        qr = await asaas.getPixQrCode(payment.id)
-      } catch {
-        // pix pode não estar pronto imediatamente
+        const pixReady = await asaas.hasActivePixAddressKey()
+        if (!pixReady) {
+          throw new BillingRequirementError(
+            "A conta Asaas nao tem chave Pix ativa. Cadastre uma chave Pix no Asaas e gere o pagamento de novo."
+          )
+        }
+        const cadastro = await asaas.getAccountRegistrationStatus()
+        if (cadastro.bankAccountInfo && cadastro.bankAccountInfo !== "APPROVED") {
+          throw new BillingRequirementError(
+            "A conta bancaria no Asaas ainda esta pendente. O banco recusa o Pix ate o Asaas aprovar a conta bancaria no painel."
+          )
+        }
+      } catch (err) {
+        if (err instanceof BillingRequirementError) throw err
       }
+
+      const paymentRef = reference ?? `subscription-invoice:${sub.id}:${Date.now()}`
+      const staticQr = await asaas.createTrackedStaticPix({
+        value: amount,
+        description,
+        externalReference: paymentRef,
+      })
       return prisma.subscriptionInvoice.create({
         data: {
           clinicSubscriptionId: sub.id,
           clinicId: sub.clinicId,
-          asaasPaymentId: payment.id,
+          asaasPaymentId: staticQr.trackingId,
           amount,
           status: "PENDING",
           billingType: "PIX",
           dueDate: due,
-          pixQrCode: qr.encodedImage ?? null,
-          pixCopyPaste: qr.payload ?? null,
-          invoiceUrl: payment.invoiceUrl ?? null,
-          reference: reference ?? payment.id.slice(-8).toUpperCase(),
+          pixQrCode: staticQr.encodedImage || null,
+          pixCopyPaste: staticQr.payload,
+          invoiceUrl: null,
+          reference: paymentRef,
         },
       })
     } catch (err) {
@@ -252,7 +262,7 @@ export async function cancelPendingUpgradeInvoices(clinicSubscriptionId: string)
   })
   for (const inv of invoices) {
     if (inv.asaasPaymentId && isAsaasConfigured()) {
-      await asaas.deletePayment(inv.asaasPaymentId).catch(() => undefined)
+      await releaseAsaasCharge(inv.asaasPaymentId)
     }
   }
   if (invoices.length) {
@@ -342,10 +352,20 @@ type AsaasPaymentPayload = {
   id?: string
   subscription?: string
   externalReference?: string
+  pixQrCodeId?: string
   value?: number
   dueDate?: string
   billingType?: string
   status?: string
+}
+
+async function releaseAsaasCharge(asaasPaymentId: string) {
+  const qrId = asaas.parsePixQrTrackingId(asaasPaymentId)
+  if (qrId) {
+    await asaas.deleteStaticPixQr(qrId).catch(() => undefined)
+    return
+  }
+  await asaas.deletePayment(asaasPaymentId).catch(() => undefined)
 }
 
 async function ensureInvoiceForAsaasPayment(
@@ -359,11 +379,28 @@ async function ensureInvoiceForAsaasPayment(
   if (existing) return existing
 
   let remote = payment
-  if ((!remote?.subscription && !remote?.externalReference) && isAsaasConfigured()) {
+  if (
+    (!remote?.subscription && !remote?.externalReference && !remote?.pixQrCodeId) &&
+    isAsaasConfigured()
+  ) {
     try {
       remote = (await asaas.getPayment(asaasPaymentId)) as AsaasPaymentPayload
     } catch {
       return null
+    }
+  }
+
+  if (remote?.pixQrCodeId) {
+    const byQr = await prisma.subscriptionInvoice.findUnique({
+      where: { asaasPaymentId: asaas.pixQrTrackingId(remote.pixQrCodeId) },
+      include: { subscription: { include: { plan: true } } },
+    })
+    if (byQr) {
+      return prisma.subscriptionInvoice.update({
+        where: { id: byQr.id },
+        data: { asaasPaymentId },
+        include: { subscription: { include: { plan: true } } },
+      })
     }
   }
 
@@ -382,6 +419,21 @@ async function ensureInvoiceForAsaasPayment(
       sub = await prisma.clinicSubscription.findUnique({
         where: { id: subId },
         include: { plan: true },
+      })
+    }
+  }
+
+  if (externalRef.startsWith("upgrade:")) {
+    const pending = await prisma.subscriptionInvoice.findFirst({
+      where: { reference: externalRef, status: { in: ["PENDING", "OVERDUE"] } },
+      include: { subscription: { include: { plan: true } } },
+      orderBy: { createdAt: "desc" },
+    })
+    if (pending) {
+      return prisma.subscriptionInvoice.update({
+        where: { id: pending.id },
+        data: { asaasPaymentId },
+        include: { subscription: { include: { plan: true } } },
       })
     }
   }
@@ -501,6 +553,31 @@ export async function handleSubscriptionPaymentRefund(asaasPaymentId: string) {
   return handleSubscriptionPaymentWebhook(asaasPaymentId, "REFUNDED")
 }
 
+export async function syncPendingStaticPixInvoice(invoiceId: string) {
+  const invoice = await prisma.subscriptionInvoice.findUnique({ where: { id: invoiceId } })
+  if (!invoice || invoice.status === "PAID" || invoice.status === "CANCELLED") return invoice
+  if (!isAsaasConfigured()) return invoice
+
+  const qrId = asaas.parsePixQrTrackingId(invoice.asaasPaymentId)
+  if (qrId) {
+    const listed = await asaas.listPayments({ pixQrCodeId: qrId, limit: 10 })
+    const paid = listed.data?.find((row) => row.status === "RECEIVED" || row.status === "CONFIRMED")
+    if (paid) {
+      await handleSubscriptionPaymentWebhook(paid.id, paid.status, paid)
+    }
+    return prisma.subscriptionInvoice.findUnique({ where: { id: invoiceId } })
+  }
+
+  if (asaas.isCobvPixPayload(invoice.pixCopyPaste) || !asaas.isValidPixPayload(invoice.pixCopyPaste)) {
+    try {
+      return await refreshInvoicePix(invoice.id, invoice.clinicId)
+    } catch {
+      return invoice
+    }
+  }
+  return invoice
+}
+
 export async function listClinicInvoices(clinicId: string) {
   const rows = await prisma.subscriptionInvoice.findMany({
     where: { clinicId },
@@ -508,6 +585,22 @@ export async function listClinicInvoices(clinicId: string) {
     take: 24,
     include: { subscription: { include: { plan: true } } },
   })
+  for (const row of rows) {
+    if (
+      (row.status === "PENDING" || row.status === "OVERDUE") &&
+      row.billingType === "PIX" &&
+      (asaas.isCobvPixPayload(row.pixCopyPaste) || !asaas.isValidPixPayload(row.pixCopyPaste))
+    ) {
+      try {
+        const refreshed = await refreshInvoicePix(row.id, clinicId)
+        row.pixQrCode = refreshed.pixQrCode
+        row.pixCopyPaste = refreshed.pixCopyPaste
+        row.asaasPaymentId = refreshed.asaasPaymentId
+      } catch (err) {
+        console.warn("[SaaS Billing] nao converteu Pix cobv para estatico:", err)
+      }
+    }
+  }
   return rows.map((row) => ({
     id: row.id,
     amount: moneyFromUnknown(row.amount),
@@ -527,10 +620,23 @@ export async function refreshInvoicePix(invoiceId: string, clinicId: string) {
   const invoice = await prisma.subscriptionInvoice.findFirst({
     where: { id: invoiceId, clinicId },
   })
-  if (!invoice?.asaasPaymentId || !isAsaasConfigured()) throw new Error("NOT_AVAILABLE")
-  const qr = await asaas.getPixQrCode(invoice.asaasPaymentId)
+  if (!invoice || !isAsaasConfigured()) throw new Error("NOT_AVAILABLE")
+  if (invoice.status === "PAID" || invoice.status === "CANCELLED") throw new Error("NOT_AVAILABLE")
+  const paymentRef = invoice.reference ?? `subscription-invoice:${invoice.clinicSubscriptionId}:${Date.now()}`
+  const staticQr = await asaas.createTrackedStaticPix({
+    value: moneyFromUnknown(invoice.amount),
+    description: "ClinMax assinatura",
+    externalReference: paymentRef,
+  })
+  if (invoice.asaasPaymentId && invoice.asaasPaymentId !== staticQr.trackingId) {
+    await releaseAsaasCharge(invoice.asaasPaymentId)
+  }
   return prisma.subscriptionInvoice.update({
     where: { id: invoiceId },
-    data: { pixQrCode: qr.encodedImage, pixCopyPaste: qr.payload },
+    data: {
+      asaasPaymentId: staticQr.trackingId,
+      pixQrCode: staticQr.encodedImage || null,
+      pixCopyPaste: staticQr.payload,
+    },
   })
 }

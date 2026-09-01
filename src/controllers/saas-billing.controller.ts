@@ -169,7 +169,12 @@ export async function createSubscriptionInvoice(req: FastifyRequest, reply: Fast
 export async function getCurrentSubscription(req: FastifyRequest, reply: FastifyReply) {
   const payload = req.user as JwtPayload
   if (!payload.clinicId) return reply.status(403).send({ error: "Usuário sem clínica selecionada" })
-  const sub = await subscriptionService.getSubscriptionByClinicId(payload.clinicId)
+  let sub = await subscriptionService.getSubscriptionByClinicId(payload.clinicId)
+  if (!sub) {
+    const { ensureClinicSubscription } = await import("@/lib/saas-billing-seed.js")
+    await ensureClinicSubscription(payload.clinicId)
+    sub = await subscriptionService.getSubscriptionByClinicId(payload.clinicId)
+  }
   if (!sub) return reply.status(404).send({ error: "Assinatura não encontrada" })
   return reply.send(sub)
 }
@@ -242,7 +247,15 @@ export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply)
     const sequential = raw.startsWith("PLAN_UPGRADE_NOT_SEQUENTIAL")
     const nextSlug = sequential && raw.includes(":") ? raw.split(":")[1] : ""
     const nextName =
-      nextSlug === "profissional" ? "Profissional" : nextSlug === "premium" ? "Premium" : nextSlug === "essencial" ? "Essencial" : ""
+      nextSlug === "profissional"
+        ? "Profissional"
+        : nextSlug === "premium"
+          ? "Premium"
+          : nextSlug === "essencial"
+            ? "Essencial"
+            : nextSlug === "gratis"
+              ? "Grátis"
+              : ""
     const message =
       err instanceof billing.BillingRequirementError
         ? err.message
@@ -250,6 +263,8 @@ export async function changeClinicPlan(req: FastifyRequest, reply: FastifyReply)
           ? nextName
             ? `Só é possível subir um plano por vez. Assine o ${nextName} primeiro.`
             : "Só é possível subir um plano por vez."
+        : raw === "PLAN_NOT_FOUND"
+          ? "Não foi possível identificar o plano. Recarregue a página e tente de novo."
         : raw.toLowerCase().includes("cpf")
           ? "Informe o CNPJ da clínica (ou o CPF do responsável) nas configurações para gerar o pagamento da assinatura."
           : "Não foi possível alterar o plano"

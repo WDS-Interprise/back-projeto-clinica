@@ -14,6 +14,7 @@ import {
   COMPARISON_ROWS,
   formatComparisonValue,
   getCommercialPlan,
+  WEBHOOK_TEST_PLAN_SLUG,
 } from "@/lib/plan-catalog.js"
 
 function presentPlan(row: {
@@ -65,7 +66,7 @@ export async function listPlans(includeInactive = true) {
 
 export async function listPublicPlans() {
   const rows = await prisma.plan.findMany({
-    where: { active: true, public: true },
+    where: { active: true, public: true, slug: { not: WEBHOOK_TEST_PLAN_SLUG } },
     orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
   })
   return rows.map((r) => presentPlan({ ...r, _count: { subscriptions: 0 } }))
@@ -117,7 +118,7 @@ export function presentPublicCatalogPlan(row: {
 
 export async function listPublicCatalog() {
   const rows = await prisma.plan.findMany({
-    where: { active: true, public: true },
+    where: { active: true, public: true, slug: { not: WEBHOOK_TEST_PLAN_SLUG } },
     orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
   })
   return {
