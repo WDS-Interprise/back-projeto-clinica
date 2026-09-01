@@ -2,11 +2,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Dev local: SQLite (npm run db:push && npm run db:seed)
-// Producao: troque para postgresql e DATABASE_URL no .env
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum InviteStatus {

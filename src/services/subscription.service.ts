@@ -3,11 +3,7 @@ import prisma from "@/lib/prisma.js"
 import { moneyFromUnknown, roundMoney } from "@/lib/money.js"
 import { writeAuditLog } from "@/lib/audit-log.js"
 import { parsePlanFeatures, parsePlanLimits, LEGACY_PLAN_SLUG } from "@/lib/plan-features.js"
-import {
-  isCommercialRankUpgrade,
-  isNextCommercialUpgrade,
-  nextCommercialPlanSlug,
-} from "@/lib/plan-catalog.js"
+import { isCommercialRankUpgrade, WEBHOOK_TEST_PLAN_SLUG } from "@/lib/plan-catalog.js"
 import { computeTrialEnd, getClinicUsageSummary } from "@/lib/plan-entitlements.js"
 import { canRepairPastDueGhost } from "@/lib/subscription-lifecycle-rules.js"
 import * as billing from "@/services/subscription-billing.service.js"
@@ -124,7 +120,7 @@ export async function getSubscriptionById(id: string) {
 }
 
 export async function getSubscriptionByClinicId(clinicId: string) {
-  const row = await prisma.clinicSubscription.findUnique({
+  let row = await prisma.clinicSubscription.findUnique({
     where: { clinicId },
     include: {
       plan: true,
@@ -133,6 +129,26 @@ export async function getSubscriptionByClinicId(clinicId: string) {
     },
   })
   if (!row) return null
+
+  const pendingPix = row.invoices.find(
+    (inv) =>
+      (inv.status === "PENDING" || inv.status === "OVERDUE") &&
+      String(inv.reference ?? "").startsWith("upgrade:")
+  )
+  if (pendingPix) {
+    await billing.syncPendingStaticPixInvoice(pendingPix.id).catch((err) => {
+      console.warn("[SaaS Billing] sync Pix pendente falhou:", err)
+    })
+    const fresh = await prisma.clinicSubscription.findUnique({
+      where: { clinicId },
+      include: {
+        plan: true,
+        clinic: { select: { id: true, name: true, active: true, createdAt: true } },
+        invoices: { orderBy: { dueDate: "desc" }, take: 12 },
+      },
+    })
+    if (fresh) row = fresh
+  }
 
   const invoiceCount = await prisma.subscriptionInvoice.count({ where: { clinicSubscriptionId: row.id } })
   if (canRepairPastDueGhost({ status: row.status, invoiceCount })) {
@@ -209,10 +225,6 @@ export async function changePlan(
   if (!plan || !plan.active) throw new Error("PLAN_NOT_AVAILABLE")
 
   const rankUpgrade = isCommercialRankUpgrade(sub.plan.slug, plan.slug)
-  if (rankUpgrade && !opts?.allowNonSequential && !isNextCommercialUpgrade(sub.plan.slug, plan.slug)) {
-    const nextSlug = nextCommercialPlanSlug(sub.plan.slug)
-    throw new Error(nextSlug ? `PLAN_UPGRADE_NOT_SEQUENTIAL:${nextSlug}` : "PLAN_UPGRADE_NOT_SEQUENTIAL")
-  }
 
   const billingCycle = opts?.billingCycle ?? sub.billingCycle
   const currentPrice =
@@ -222,7 +234,8 @@ export async function changePlan(
   const nextPrice =
     billingCycle === "ANNUAL" ? moneyFromUnknown(plan.annualPrice) : moneyFromUnknown(plan.monthlyPrice)
   const isUpgrade =
-    (nextPrice > currentPrice || rankUpgrade) && plan.slug !== LEGACY_PLAN_SLUG
+    (plan.slug === WEBHOOK_TEST_PLAN_SLUG && nextPrice > 0) ||
+    ((nextPrice > currentPrice || rankUpgrade) && plan.slug !== LEGACY_PLAN_SLUG)
 
   if (isUpgrade) {
     await billing.cancelPendingUpgradeInvoices(sub.id)
@@ -426,16 +439,18 @@ export async function cancelPendingUpgradeByClinic(clinicId: string, actorUserId
 
 export async function requestPlanChangeByClinic(
   clinicId: string,
-  planId: string,
+  planIdOrSlug: string,
   billingCycle: BillingCycle,
   extra?: Omit<NonNullable<Parameters<typeof changePlan>[3]>, "billingCycle">
 ) {
-  return changePlan(
-    (await prisma.clinicSubscription.findUniqueOrThrow({ where: { clinicId } })).id,
-    planId,
-    undefined,
-    { billingCycle, ...extra }
-  )
+  const { ensureClinicSubscription } = await import("@/lib/saas-billing-seed.js")
+  await ensureClinicSubscription(clinicId)
+  const plan = await prisma.plan.findFirst({
+    where: { OR: [{ id: planIdOrSlug }, { slug: planIdOrSlug }] },
+  })
+  if (!plan) throw new Error("PLAN_NOT_FOUND")
+  const sub = await prisma.clinicSubscription.findUniqueOrThrow({ where: { clinicId } })
+  return changePlan(sub.id, plan.id, undefined, { billingCycle, ...extra })
 }
 
 export async function getClinicDetail(clinicId: string) {

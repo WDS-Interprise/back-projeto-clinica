@@ -15,6 +15,8 @@ import { parsePlanLimits, serializePlanLimits, mergeEntitlementLimits } from "./
 describe("catálogo comercial ClinMax", () => {
   it("mantém os preços oficiais", () => {
     const bySlug = Object.fromEntries(COMMERCIAL_PLANS.map((p) => [p.slug, p]))
+    assert.equal(bySlug.gratis.monthlyPrice, 0)
+    assert.equal(bySlug.gratis.annualPrice, 0)
     assert.equal(bySlug.essencial.monthlyPrice, 99)
     assert.equal(bySlug.essencial.annualPrice, 990)
     assert.equal(bySlug.profissional.monthlyPrice, 199)
@@ -42,11 +44,13 @@ describe("catálogo comercial ClinMax", () => {
     assert.equal(isCommercialPlanSlug("legacy"), false)
   })
 
-  it("não oferece trial gratuito nos planos comerciais", () => {
+  it("não oferece trial nos planos pagos", () => {
     for (const plan of COMMERCIAL_PLANS) {
       assert.equal(plan.trialDays, 0)
+      if (plan.slug === "gratis") continue
       assert.equal(plan.ctaLabel.toLowerCase().includes("grátis"), false)
       assert.equal(plan.ctaLabel.toLowerCase().includes("testar"), false)
+      assert.ok(plan.monthlyPrice > 0)
     }
   })
 
@@ -80,12 +84,15 @@ describe("catálogo comercial ClinMax", () => {
     assert.equal(merged.maxWhatsappConnections, 3)
   })
 
-  it("cadastro comercial começa no Essencial e só sobe um degrau", () => {
-    assert.equal(DEFAULT_SIGNUP_PLAN_SLUG, "essencial")
+  it("cadastro comercial começa no Grátis e só sobe um degrau", () => {
+    assert.equal(DEFAULT_SIGNUP_PLAN_SLUG, "gratis")
+    assert.equal(nextCommercialPlanSlug("gratis"), "essencial")
     assert.equal(nextCommercialPlanSlug("essencial"), "profissional")
     assert.equal(nextCommercialPlanSlug("profissional"), "premium")
     assert.equal(nextCommercialPlanSlug("premium"), null)
-    assert.equal(nextCommercialPlanSlug("legacy"), "essencial")
+    assert.equal(nextCommercialPlanSlug("legacy"), "gratis")
+    assert.equal(isNextCommercialUpgrade("gratis", "essencial"), true)
+    assert.equal(isNextCommercialUpgrade("gratis", "profissional"), false)
     assert.equal(isNextCommercialUpgrade("essencial", "profissional"), true)
     assert.equal(isNextCommercialUpgrade("essencial", "premium"), false)
     assert.equal(isCommercialRankUpgrade("essencial", "premium"), true)
@@ -93,7 +100,7 @@ describe("catálogo comercial ClinMax", () => {
   })
 
   it("compara recursos com o entitlement real", () => {
-    const essencial = COMMERCIAL_PLANS[0]
+    const essencial = COMMERCIAL_PLANS.find((p) => p.slug === "essencial")!
     const whatsapp = formatComparisonValue({
       kind: "feature",
       feature: "WHATSAPP",

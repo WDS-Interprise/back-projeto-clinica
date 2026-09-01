@@ -5,11 +5,12 @@ import {
 } from "@/lib/plan-features.js"
 
 /** Subir este número força o seed a reaplicar o pacote comercial nos slugs públicos. */
-export const PLAN_CATALOG_VERSION = 4
+export const PLAN_CATALOG_VERSION = 5
 
-export const COMMERCIAL_PLAN_SLUGS = ["essencial", "profissional", "premium"] as const
+export const COMMERCIAL_PLAN_SLUGS = ["gratis", "essencial", "profissional", "premium"] as const
 export type CommercialPlanSlug = (typeof COMMERCIAL_PLAN_SLUGS)[number]
-export const DEFAULT_SIGNUP_PLAN_SLUG: CommercialPlanSlug = "essencial"
+export const DEFAULT_SIGNUP_PLAN_SLUG: CommercialPlanSlug = "gratis"
+export const WEBHOOK_TEST_PLAN_SLUG = "teste-webhook"
 
 export type ComparisonKind = "feature" | "limit"
 
@@ -37,6 +38,8 @@ export type CommercialPlanDef = {
   features: PlanFeature[]
   limits: PlanLimits
 }
+
+const FREE_FEATURES: PlanFeature[] = ["DASHBOARD", "AGENDA", "PATIENTS"]
 
 const ESSENTIAL_FEATURES: PlanFeature[] = [
   "DASHBOARD",
@@ -68,6 +71,36 @@ const PREMIUM_FEATURES: PlanFeature[] = [
 ]
 
 export const COMMERCIAL_PLANS: CommercialPlanDef[] = [
+  {
+    slug: "gratis",
+    name: "Grátis",
+    description: "Comece sem pagar. Agenda, pacientes e painel, com limites reduzidos.",
+    monthlyPrice: 0,
+    annualPrice: 0,
+    trialDays: 0,
+    highlighted: false,
+    displayOrder: 0,
+    public: true,
+    badge: "Padrão",
+    ctaLabel: "Começar grátis",
+    marketingFeatures: [
+      "Painel",
+      "Agenda",
+      "Pacientes",
+      "1 usuário",
+      "1 profissional",
+      "Sem WhatsApp, financeiro e IA",
+    ],
+    features: FREE_FEATURES,
+    limits: {
+      maxUsers: 1,
+      maxDoctors: 1,
+      maxWhatsappConnections: 0,
+      maxAiAssistantMessagesPerMonth: 0,
+      maxAiAutomationActionsPerMonth: 0,
+      maxStorageMb: 512,
+    },
+  },
   {
     slug: "essencial",
     name: "Essencial",
@@ -161,6 +194,27 @@ export const COMMERCIAL_PLANS: CommercialPlanDef[] = [
     },
   },
 ]
+
+export const WEBHOOK_TEST_PLAN = {
+  slug: WEBHOOK_TEST_PLAN_SLUG,
+  name: "Teste 1 centavo",
+  description: "Plano de teste do Pix. Custa R$ 0,01.",
+  monthlyPrice: 0.01,
+  annualPrice: 0.01,
+  trialDays: 0,
+  highlighted: false,
+  displayOrder: 4,
+  public: false,
+  features: FREE_FEATURES,
+  limits: {
+    maxUsers: 1,
+    maxDoctors: 1,
+    maxWhatsappConnections: 0,
+    maxAiAssistantMessagesPerMonth: 0,
+    maxAiAutomationActionsPerMonth: 0,
+    maxStorageMb: 512,
+  },
+} as const
 
 export const COMPARISON_ROWS: ComparisonRowDef[] = [
   { key: "agenda", label: "Agenda", kind: "feature", feature: "AGENDA" },

@@ -11,6 +11,7 @@ import {
   COMMERCIAL_PLANS,
   DEFAULT_SIGNUP_PLAN_SLUG,
   PLAN_CATALOG_VERSION,
+  WEBHOOK_TEST_PLAN,
   isCommercialPlanSlug,
 } from "@/lib/plan-catalog.js"
 import { moneyFromUnknown } from "@/lib/money.js"
@@ -96,13 +97,14 @@ export async function ensurePlatformPlansAndSettings() {
         featuresJson: serializePlanFeatures(def.features),
         limitsJson: serializePlanLimits(def.limits),
       }
+      const { monthlyPrice: _monthly, annualPrice: _annual, ...catalogWithoutPrices } = payload
       await prisma.plan.upsert({
         where: { slug: def.slug },
         create: {
           slug: def.slug,
           ...payload,
         },
-        update: shouldSyncCatalog ? payload : {},
+        update: shouldSyncCatalog ? catalogWithoutPrices : {},
       })
     }
 
@@ -116,13 +118,35 @@ export async function ensurePlatformPlansAndSettings() {
       })
     }
 
-    const essencial = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
-    await prisma.platformSettings.update({
-      where: { id: "platform" },
-      data: { defaultPlanId: essencial?.id ?? legacy.id },
+    const testPlanPayload = {
+      name: WEBHOOK_TEST_PLAN.name,
+      description: WEBHOOK_TEST_PLAN.description,
+      active: false,
+      public: false,
+      monthlyPrice: WEBHOOK_TEST_PLAN.monthlyPrice,
+      annualPrice: WEBHOOK_TEST_PLAN.annualPrice,
+      trialDays: 0,
+      highlighted: false,
+      displayOrder: WEBHOOK_TEST_PLAN.displayOrder,
+      featuresJson: serializePlanFeatures([...WEBHOOK_TEST_PLAN.features]),
+      limitsJson: serializePlanLimits({ ...WEBHOOK_TEST_PLAN.limits }),
+    }
+    const { monthlyPrice: _testMonthly, annualPrice: _testAnnual, ...testWithoutPrices } = testPlanPayload
+    await prisma.plan.upsert({
+      where: { slug: WEBHOOK_TEST_PLAN.slug },
+      create: { slug: WEBHOOK_TEST_PLAN.slug, ...testPlanPayload },
+      update: testWithoutPrices,
     })
 
-    return { legacyPlanId: legacy.id, defaultPlanId: essencial?.id ?? legacy.id }
+    const defaultPlan = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
+    await prisma.platformSettings.update({
+      where: { id: "platform" },
+      data: { defaultPlanId: defaultPlan?.id ?? legacy.id },
+    })
+
+    await migrateUnpaidEssencialToGratis()
+
+    return { legacyPlanId: legacy.id, defaultPlanId: defaultPlan?.id ?? legacy.id }
   } catch (err) {
     if (isMissingSchemaError(err)) {
       console.warn(
@@ -134,6 +158,34 @@ export async function ensurePlatformPlansAndSettings() {
   }
 }
 
+/** Clinicas no Essencial sem nenhum pagamento voltam para o Grátis (padrão novo). */
+async function migrateUnpaidEssencialToGratis() {
+  const gratis = await prisma.plan.findUnique({ where: { slug: "gratis" } })
+  const essencial = await prisma.plan.findUnique({ where: { slug: "essencial" } })
+  if (!gratis || !essencial) return
+
+  const unpaid = await prisma.clinicSubscription.findMany({
+    where: {
+      planId: essencial.id,
+      invoices: { none: { status: "PAID" } },
+    },
+    select: { id: true, clinicId: true },
+  })
+  if (!unpaid.length) return
+
+  await prisma.clinicSubscription.updateMany({
+    where: { id: { in: unpaid.map((s) => s.id) } },
+    data: { planId: gratis.id, status: "ACTIVE" },
+  })
+  await prisma.subscriptionInvoice.updateMany({
+    where: {
+      clinicSubscriptionId: { in: unpaid.map((s) => s.id) },
+      status: { in: ["PENDING", "OVERDUE"] },
+    },
+    data: { status: "CANCELLED" },
+  })
+}
+
 export async function ensureClinicSubscription(
   clinicId: string,
   opts?: { planId?: string; planSlug?: string; trialDays?: number }
@@ -142,13 +194,13 @@ export async function ensureClinicSubscription(
   if (existing) return existing
 
   // planSlug da landing e intencao de compra, nao o plano ativo.
-  // Clinica nova sempre comeca no Essencial (salvo planId explicito para Legacy/testes).
+  // Clinica nova sempre comeca no Grátis (salvo planId explicito para Legacy/testes).
 
   const settings = await prisma.platformSettings.findUnique({ where: { id: "platform" } })
   let planId = opts?.planId
   if (!planId) {
-    const essencial = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
-    planId = essencial?.id
+    const defaultPlan = await prisma.plan.findUnique({ where: { slug: DEFAULT_SIGNUP_PLAN_SLUG } })
+    planId = defaultPlan?.id
   }
   if (!planId) planId = settings?.defaultPlanId ?? undefined
   if (!planId) {

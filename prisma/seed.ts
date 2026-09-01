@@ -184,7 +184,7 @@ async function main() {
   const patients = []
   for (const p of patientsData) {
     const patient = await prisma.patient.upsert({
-      where: { cpf: p.cpf },
+      where: { clinicId_cpf: { clinicId: clinic.id, cpf: p.cpf } },
       update: {
         name: p.name,
         phone: p.phone,
