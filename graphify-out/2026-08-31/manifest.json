@@ -1,14 +1,14 @@
 {
   "deploy/ecosystem.config.cjs": {
-    "mtime": 1787980381.5689254,
-    "seen": 1788227843.2840035,
-    "ast_hash": "5997dd2806a9648d9c8c57bf9f544189",
+    "mtime": 1787776303.8341107,
+    "seen": 1787776894.9210021,
+    "ast_hash": "75dd3fffbc5682021fbbd4beca0d8613",
     "semantic_hash": ""
   },
   "package.json": {
-    "mtime": 1788192860.9282992,
-    "seen": 1788227843.2840118,
-    "ast_hash": "06edfad0d11d4e46e629f04e715243f5",
+    "mtime": 1787767089.9824436,
+    "seen": 1787767260.4926136,
+    "ast_hash": "abdb785aeaab994ef9ced91503bb956d",
     "semantic_hash": ""
   },
   "prisma/seed-cid-inss.ts": {
@@ -30,9 +30,9 @@
     "semantic_hash": ""
   },
   "prisma/seed.ts": {
-    "mtime": 1788225775.9962797,
-    "seen": 1788227843.2846313,
-    "ast_hash": "e197737b8a4d39d9a3482ef35329342c",
+    "mtime": 1787313023.5168777,
+    "seen": 1787315093.0419443,
+    "ast_hash": "80daefcac5679be307fc6eed7d4c62ef",
     "semantic_hash": ""
   },
   "scripts/build-email-hero.ts": {
@@ -228,9 +228,9 @@
     "semantic_hash": ""
   },
   "src/controllers/clinics.controller.ts": {
-    "mtime": 1788192814.7676363,
-    "seen": 1788227843.2895973,
-    "ast_hash": "3fc6b52303a7e5382e8825eeac8afa84",
+    "mtime": 1783982873.8459072,
+    "seen": 1787315093.0419793,
+    "ast_hash": "7fdebfe1714c6133e02557f52c3f05e6",
     "semantic_hash": ""
   },
   "src/controllers/clinmax-pay.controller.ts": {
@@ -264,8 +264,8 @@
     "semantic_hash": ""
   },
   "src/controllers/finance.controller.ts": {
-    "mtime": 1788225775.9689946,
-    "seen": 1788227843.290346,
+    "mtime": 1787638700.2566917,
+    "seen": 1787766284.5712698,
     "ast_hash": "5e0b0095272c9cf678feb01593745280",
     "semantic_hash": ""
   },
@@ -276,9 +276,9 @@
     "semantic_hash": ""
   },
   "src/controllers/invite.controller.ts": {
-    "mtime": 1788117599.1942973,
-    "seen": 1788227843.2905023,
-    "ast_hash": "6132338a841b8d0e2c29556e4be8750c",
+    "mtime": 1787313023.6188788,
+    "seen": 1787315093.0419884,
+    "ast_hash": "e4125a6a7a3c82fb25de32befe28280e",
     "semantic_hash": ""
   },
   "src/controllers/medicamentos.controller.ts": {
@@ -318,9 +318,9 @@
     "semantic_hash": ""
   },
   "src/controllers/saas-billing.controller.ts": {
-    "mtime": 1788225776.0756307,
-    "seen": 1788227843.2913718,
-    "ast_hash": "13dc631adc96b230c34cadb1131b4ee9",
+    "mtime": 1787337063.9423397,
+    "seen": 1787766284.5722713,
+    "ast_hash": "7535aa5d08829dc93a4601d50a65c48c",
     "semantic_hash": ""
   },
   "src/controllers/satisfaction.controller.ts": {
@@ -336,9 +336,9 @@
     "semantic_hash": ""
   },
   "src/controllers/users.controller.ts": {
-    "mtime": 1788117594.4568007,
-    "seen": 1788227843.2916632,
-    "ast_hash": "31efec57896c3f071671a94aa0ab0bf2",
+    "mtime": 1783982873.8589175,
+    "seen": 1787315093.041999,
+    "ast_hash": "37128415222aed51c18d95f74305768c",
     "semantic_hash": ""
   },
   "src/controllers/vacinas.controller.ts": {
@@ -360,9 +360,9 @@
     "semantic_hash": ""
   },
   "src/index.ts": {
-    "mtime": 1788192815.113225,
-    "seen": 1788227843.294538,
-    "ast_hash": "61b6ee86a91f8f948a8250d7ba40fa02",
+    "mtime": 1787638700.3795147,
+    "seen": 1787766284.573264,
+    "ast_hash": "8997c05158e533dbea77684b2aecfe81",
     "semantic_hash": ""
   },
   "src/lib/agenda-schedule.ts": {
@@ -402,9 +402,9 @@
     "semantic_hash": ""
   },
   "src/lib/asaas.client.ts": {
-    "mtime": 1788225776.1468956,
-    "seen": 1788227843.2954142,
-    "ast_hash": "48592cad0feca9bb0fea6fd9d9abc5c4",
+    "mtime": 1787337033.6234796,
+    "seen": 1787766284.5740614,
+    "ast_hash": "3d437767eb5d39f254e7d875faa1ed22",
     "semantic_hash": ""
   },
   "src/lib/audit-log.ts": {
@@ -444,9 +444,9 @@
     "semantic_hash": ""
   },
   "src/lib/clinic-roles.ts": {
-    "mtime": 1787980381.5971582,
-    "seen": 1788227843.296289,
-    "ast_hash": "664082e3d410a4b8261962e5897375f4",
+    "mtime": 1787638700.3870282,
+    "seen": 1787766284.5748038,
+    "ast_hash": "a9aa60c3bb8838def7617cd6e97bee52",
     "semantic_hash": ""
   },
   "src/lib/clinic-time.ts": {
@@ -498,15 +498,15 @@
     "semantic_hash": ""
   },
   "src/lib/invite-email-assets.ts": {
-    "mtime": 1788192825.2697313,
-    "seen": 1788227843.2977836,
-    "ast_hash": "75f2a476d3b3ad052277c6c7726757ba",
+    "mtime": 1787313023.4698763,
+    "seen": 1787315093.0420277,
+    "ast_hash": "d614668871f9c28b2e8c496277964962",
     "semantic_hash": ""
   },
   "src/lib/invite-email-template.ts": {
-    "mtime": 1788191412.6177125,
-    "seen": 1788227843.2977858,
-    "ast_hash": "3a4cd667923b63e61ffc1ffb544385da",
+    "mtime": 1787313023.4528787,
+    "seen": 1787315093.042029,
+    "ast_hash": "656c2eaa9a17df9d4611a4e118dc1607",
     "semantic_hash": ""
   },
   "src/lib/mail-from.ts": {
@@ -564,14 +564,14 @@
     "semantic_hash": ""
   },
   "src/lib/plan-entitlements.ts": {
-    "mtime": 1788117578.8280823,
-    "seen": 1788227843.2993026,
-    "ast_hash": "10a8ab628647c634532a410c1a22cb9e",
+    "mtime": 1787638700.3372757,
+    "seen": 1787766284.5778005,
+    "ast_hash": "0b60e92359fa31871bcdc6cfa96977fa",
     "semantic_hash": ""
   },
   "src/lib/plan-features.ts": {
-    "mtime": 1788225776.012382,
-    "seen": 1788227843.2993042,
+    "mtime": 1787638700.376002,
+    "seen": 1787766284.5778022,
     "ast_hash": "b2e38592fa12e72f82b5f4c13ee6af2d",
     "semantic_hash": ""
   },
@@ -606,9 +606,9 @@
     "semantic_hash": ""
   },
   "src/lib/saas-billing-seed.ts": {
-    "mtime": 1788227287.2651553,
-    "seen": 1788227843.3003857,
-    "ast_hash": "cc0e65769baef4061c0c4e97ffbff483",
+    "mtime": 1787638700.2566917,
+    "seen": 1787766284.5784457,
+    "ast_hash": "8f41f70a7eafbee0b4d8c51102538d1f",
     "semantic_hash": ""
   },
   "src/lib/storage.ts": {
@@ -636,8 +636,8 @@
     "semantic_hash": ""
   },
   "src/lib/whatsapp-doctor-resolve.ts": {
-    "mtime": 1788225776.0826926,
-    "seen": 1788227843.3009791,
+    "mtime": 1787638700.3770056,
+    "seen": 1787766284.579115,
     "ast_hash": "af505b066b696ff6476ce94d8e722f20",
     "semantic_hash": ""
   },
@@ -738,8 +738,8 @@
     "semantic_hash": ""
   },
   "src/routes/finance.routes.ts": {
-    "mtime": 1788225776.0912256,
-    "seen": 1788227843.30337,
+    "mtime": 1787638700.3795147,
+    "seen": 1787766284.5814395,
     "ast_hash": "db5a48f9e1969dc7c74b11281ea0b685",
     "semantic_hash": ""
   },
@@ -804,14 +804,14 @@
     "semantic_hash": ""
   },
   "src/routes/subscription.routes.ts": {
-    "mtime": 1788117577.2582245,
-    "seen": 1788227843.3048778,
-    "ast_hash": "50ce0cf990e62fe0f017ba97bd57481d",
+    "mtime": 1787336570.289338,
+    "seen": 1787766284.5826566,
+    "ast_hash": "cd5231542fe8d0998f92d870779c5da2",
     "semantic_hash": ""
   },
   "src/routes/tiss.routes.ts": {
-    "mtime": 1788225776.1468956,
-    "seen": 1788227843.3048801,
+    "mtime": 1787638700.3870282,
+    "seen": 1787766284.582658,
     "ast_hash": "69dc778288c78529960c6c78b4c1a73c",
     "semantic_hash": ""
   },
@@ -858,15 +858,15 @@
     "semantic_hash": ""
   },
   "src/services/appointment.service.ts": {
-    "mtime": 1788117476.558362,
-    "seen": 1788227843.3059032,
-    "ast_hash": "0e06e3e0f3d6fbeb9b6ec5e577b55567",
+    "mtime": 1787638700.376002,
+    "seen": 1787766284.5837233,
+    "ast_hash": "a6cef6329c0f2bb8b7a63dc911a4e4f4",
     "semantic_hash": ""
   },
   "src/services/asaas-webhook.service.ts": {
-    "mtime": 1788225776.0912256,
-    "seen": 1788227843.3059056,
-    "ast_hash": "8c99aa5108984947dc1f00bffde21d4d",
+    "mtime": 1787313023.6118796,
+    "seen": 1787315093.0420923,
+    "ast_hash": "36321b89a7143927d3532dcf268a0f15",
     "semantic_hash": ""
   },
   "src/services/attendance-ai.service.ts": {
@@ -876,9 +876,9 @@
     "semantic_hash": ""
   },
   "src/services/auth.service.ts": {
-    "mtime": 1788225775.9942763,
-    "seen": 1788227843.3060684,
-    "ast_hash": "5ab7bc948745ae7875f0a4ba624dad77",
+    "mtime": 1787638700.2577014,
+    "seen": 1787766284.5840337,
+    "ast_hash": "f6bbe2757219290776c6e4a0f05a79f6",
     "semantic_hash": ""
   },
   "src/services/avatar.service.ts": {
@@ -930,15 +930,15 @@
     "semantic_hash": ""
   },
   "src/services/clinic.service.ts": {
-    "mtime": 1788192813.9610283,
-    "seen": 1788227843.3072588,
-    "ast_hash": "d3a072fa19085f1be43665ae76cb8b65",
+    "mtime": 1787313023.5148776,
+    "seen": 1787315093.0421042,
+    "ast_hash": "93274ce92af0996aeb5d32b042ab3e81",
     "semantic_hash": ""
   },
   "src/services/clinmax-pay.service.ts": {
-    "mtime": 1788225776.0912256,
-    "seen": 1788227843.307261,
-    "ast_hash": "e141dae40e4950566ab015484f3deb84",
+    "mtime": 1787315415.213813,
+    "seen": 1787766284.5850933,
+    "ast_hash": "513022387566a1d185f0b17d0f46f369",
     "semantic_hash": ""
   },
   "src/services/contacts.service.ts": {
@@ -948,9 +948,9 @@
     "semantic_hash": ""
   },
   "src/services/dashboard.service.ts": {
-    "mtime": 1788117414.6921184,
-    "seen": 1788227843.3074052,
-    "ast_hash": "c771bc66794b9df71f8ec95c8883611c",
+    "mtime": 1787313023.5108788,
+    "seen": 1787315093.0421073,
+    "ast_hash": "80d4dc43543716e13ae884429302a66a",
     "semantic_hash": ""
   },
   "src/services/doctor.service.ts": {
@@ -972,9 +972,9 @@
     "semantic_hash": ""
   },
   "src/services/finance.service.ts": {
-    "mtime": 1788117392.287472,
-    "seen": 1788227843.3078501,
-    "ast_hash": "0c98bdd90dc9c404b5810288bfeaacec",
+    "mtime": 1787638700.2566917,
+    "seen": 1787766284.5858774,
+    "ast_hash": "1b0fda946b163bb76f77babc1841c5e8",
     "semantic_hash": ""
   },
   "src/services/google-oauth.service.ts": {
@@ -990,9 +990,9 @@
     "semantic_hash": ""
   },
   "src/services/invite.service.ts": {
-    "mtime": 1788192851.2127397,
-    "seen": 1788227843.3081648,
-    "ast_hash": "7ae145682056d31c2b72e0ae3cce3075",
+    "mtime": 1787315417.4184134,
+    "seen": 1787766284.5862262,
+    "ast_hash": "bd2fd01d7337035af08a67a67d209a3e",
     "semantic_hash": ""
   },
   "src/services/logs.service.ts": {
@@ -1002,9 +1002,9 @@
     "semantic_hash": ""
   },
   "src/services/mail.service.ts": {
-    "mtime": 1788192839.2219448,
-    "seen": 1788227843.3083105,
-    "ast_hash": "5848eac8ba494446018c1ba444210d12",
+    "mtime": 1787313023.47588,
+    "seen": 1787315093.0421169,
+    "ast_hash": "fe4ef8e5311d5a8530b2dc006ad2cace",
     "semantic_hash": ""
   },
   "src/services/medicamentos.service.ts": {
@@ -1026,15 +1026,15 @@
     "semantic_hash": ""
   },
   "src/services/plan.service.ts": {
-    "mtime": 1788227290.0866933,
-    "seen": 1788227843.3088923,
-    "ast_hash": "83fb3b839839c44ed6240d999235b553",
+    "mtime": 1787638700.2577014,
+    "seen": 1787766284.58703,
+    "ast_hash": "df150dfb9de06a45b03906cec172c8ad",
     "semantic_hash": ""
   },
   "src/services/platform-settings.service.ts": {
-    "mtime": 1788117608.0692735,
-    "seen": 1788227843.3088942,
-    "ast_hash": "00990fd4010a5092ff1e47a1b0861fcc",
+    "mtime": 1787313023.6118796,
+    "seen": 1787315093.0421233,
+    "ast_hash": "5d9013e8dfd92ac4c5d4b71585466301",
     "semantic_hash": ""
   },
   "src/services/prescription.service.ts": {
@@ -1068,21 +1068,21 @@
     "semantic_hash": ""
   },
   "src/services/subscription-billing.service.ts": {
-    "mtime": 1788225776.0912256,
-    "seen": 1788227843.309668,
-    "ast_hash": "3e149705fbdd23e7081eb2eeec5cfcaa",
+    "mtime": 1787337033.6234796,
+    "seen": 1787766284.5878954,
+    "ast_hash": "77bfaca14ecc02a8efca636f62034b8b",
     "semantic_hash": ""
   },
   "src/services/subscription-lifecycle.service.ts": {
-    "mtime": 1788117553.6371844,
-    "seen": 1788227843.3096707,
-    "ast_hash": "5977bd5bff3cad8af3963222d8ebf759",
+    "mtime": 1787313023.6178763,
+    "seen": 1787315093.0421305,
+    "ast_hash": "3dec98b0a3b01a6073aad64247b2045d",
     "semantic_hash": ""
   },
   "src/services/subscription.service.ts": {
-    "mtime": 1788225776.1468956,
-    "seen": 1788227843.3096724,
-    "ast_hash": "fb8b1f373c63e208351595a328da6a72",
+    "mtime": 1787337061.2024326,
+    "seen": 1787766284.5880527,
+    "ast_hash": "ecaa63a352ead7cccb25da2eebe3c6e3",
     "semantic_hash": ""
   },
   "src/services/tiss.service.ts": {
@@ -1116,9 +1116,9 @@
     "semantic_hash": ""
   },
   "src/services/whatsapp-ai.service.ts": {
-    "mtime": 1788117579.9066696,
-    "seen": 1788227843.3104162,
-    "ast_hash": "cbddd3a6c8e8fc5c1c4d03fc8296793a",
+    "mtime": 1787638700.3372757,
+    "seen": 1787766284.5887165,
+    "ast_hash": "8fd3a918b25a74d527aa4b3790a7d66a",
     "semantic_hash": ""
   },
   "src/services/whatsapp-booking-orchestrator.ts": {
@@ -1146,9 +1146,9 @@
     "semantic_hash": ""
   },
   "src/services/whatsapp-reminder.service.ts": {
-    "mtime": 1787980381.6061714,
-    "seen": 1788227843.3110082,
-    "ast_hash": "157d581a4636008f983499a6a8d7b7dd",
+    "mtime": 1787313023.4588833,
+    "seen": 1787315093.0421429,
+    "ast_hash": "23e9d8808ba033a7fcac6effb635527e",
     "semantic_hash": ""
   },
   "src/services/whatsapp-satisfaction-orchestrator.ts": {
@@ -1260,15 +1260,15 @@
     "semantic_hash": ""
   },
   ".github/workflows/deploy.yml": {
-    "mtime": 1788227866.8585927,
-    "seen": 1788227915.765169,
-    "ast_hash": "9410e74ab8c1304f3fd4f13350442bb3",
+    "mtime": 1787794891.7274861,
+    "seen": 1787795025.7003567,
+    "ast_hash": "2a47acbc2ae9d81776bc279892e1e2fe",
     "semantic_hash": ""
   },
   ".github/workflows/merge-develop-to-main.yml": {
-    "mtime": 1787980381.5619216,
-    "seen": 1788227843.3136587,
-    "ast_hash": "4ed0d838a4e1dbc7f145054cb3b8dc1d",
+    "mtime": 1783982873.8149076,
+    "seen": 1787315093.0421636,
+    "ast_hash": "f8583cf3fdae2fd741c364b7b9962f1e",
     "semantic_hash": ""
   },
   "ENV-EXEMPLE-BACK.TXT": {
@@ -1284,9 +1284,9 @@
     "semantic_hash": ""
   },
   "deploy/docker-compose.prod.yml": {
-    "mtime": 1787980381.566923,
-    "seen": 1788227843.3139675,
-    "ast_hash": "1debb016e5ff6ef3469e67f0194ba3f4",
+    "mtime": 1783982873.8179107,
+    "seen": 1787315093.0421667,
+    "ast_hash": "a01a0af509540a07a9536d03f2832318",
     "semantic_hash": ""
   },
   "tmp/invite-email-preview.html": {
@@ -1488,20 +1488,20 @@
     "semantic_hash": ""
   },
   "src/lib/plan-catalog.test.ts": {
-    "mtime": 1788225775.9962797,
-    "seen": 1788227843.299298,
-    "ast_hash": "f0a04cf10a5d3f9a51116ac128cbf980",
+    "mtime": 1787638700.3372757,
+    "seen": 1787766284.577796,
+    "ast_hash": "ceb564157b9abfb79bb3a4f10e1d8680",
     "semantic_hash": ""
   },
   "src/lib/plan-catalog.ts": {
-    "mtime": 1788227294.1905432,
-    "seen": 1788227843.2993004,
-    "ast_hash": "d59cac0fda75a565beed6e1ab8d6996a",
+    "mtime": 1787638700.3855174,
+    "seen": 1787766284.5777984,
+    "ast_hash": "ede53b0ed8117fb00014e8906486ebdb",
     "semantic_hash": ""
   },
   "src/routes/public-plans.routes.ts": {
-    "mtime": 1788225775.9962797,
-    "seen": 1788227843.304443,
+    "mtime": 1787638700.3392901,
+    "seen": 1787766284.5821972,
     "ast_hash": "5bbf5c3879a368bccad86951bc6bf047",
     "semantic_hash": ""
   },
@@ -1512,15 +1512,15 @@
     "semantic_hash": ""
   },
   "scripts/validate-pm2-registration.cjs": {
-    "mtime": 1787980381.5871427,
-    "seen": 1788227843.2887034,
-    "ast_hash": "93d0549d62b33c1e1a8c3c93acb467d8",
+    "mtime": 1787776313.877048,
+    "seen": 1787776894.928629,
+    "ast_hash": "a0a5aeb5ac54d30f56f724c1553ee0d4",
     "semantic_hash": ""
   },
   "scripts/validate-pm2-registration.test.cjs": {
-    "mtime": 1787980381.5901525,
-    "seen": 1788227843.288706,
-    "ast_hash": "72739f20affbf4a463d3dd9c44cea7e1",
+    "mtime": 1787776808.3793724,
+    "seen": 1787776894.928633,
+    "ast_hash": "d6e59034b0dc8de0a8798021142d664f",
     "semantic_hash": ""
   },
   "scripts/permanent-node.cjs": {
@@ -1530,105 +1530,9 @@
     "semantic_hash": ""
   },
   "deploy/README.md": {
-    "mtime": 1787980381.564922,
-    "seen": 1788227843.3139648,
-    "ast_hash": "2eaa696fabbc86d43910554680fe5393",
-    "semantic_hash": ""
-  },
-  "scripts/prod-migrate.cjs": {
-    "mtime": 1787980381.5841398,
-    "seen": 1788227843.286695,
-    "ast_hash": "a032f7a8810c0b77b87197081bce9bcb",
-    "semantic_hash": ""
-  },
-  "src/lib/asaas-webhook-auth.test.ts": {
-    "mtime": 1788225775.9952767,
-    "seen": 1788227843.2954102,
-    "ast_hash": "62c39a6490f6efa93e7d5db6014092a1",
-    "semantic_hash": ""
-  },
-  "src/lib/asaas-webhook-auth.ts": {
-    "mtime": 1788225775.9952767,
-    "seen": 1788227843.2954125,
-    "ast_hash": "d7f9ff14597def40956005d8b82e5278",
-    "semantic_hash": ""
-  },
-  "src/lib/clinic-logo.test.ts": {
-    "mtime": 1788192810.9649057,
-    "seen": 1788227843.2962852,
-    "ast_hash": "c405bcf22b4456fcbc0ea90d97cf05ab",
-    "semantic_hash": ""
-  },
-  "src/lib/clinic-logo.ts": {
-    "mtime": 1788192806.6251168,
-    "seen": 1788227843.2962873,
-    "ast_hash": "0a1e7c94b0eb3bcc31912abe65aaab9b",
-    "semantic_hash": ""
-  },
-  "src/lib/clinmax-pay-ledger.test.ts": {
-    "mtime": 1788117785.1129594,
-    "seen": 1788227843.2964423,
-    "ast_hash": "2fcc22a47b341ab81c8894f2f1da3c63",
-    "semantic_hash": ""
-  },
-  "src/lib/clinmax-pay-ledger.ts": {
-    "mtime": 1788117344.3937888,
-    "seen": 1788227843.2964442,
-    "ast_hash": "fbe7cd1b58e74ebcc99cd50d7e8d9dea",
-    "semantic_hash": ""
-  },
-  "src/lib/company-legal.test.ts": {
-    "mtime": 1788191244.6196449,
-    "seen": 1788227843.2964456,
-    "ast_hash": "e3636009794aa59e716abce835ae65b4",
-    "semantic_hash": ""
-  },
-  "src/lib/company-legal.ts": {
-    "mtime": 1788191244.6206434,
-    "seen": 1788227843.2964468,
-    "ast_hash": "e4d0223e458d62ca6973b71ad1207ce5",
-    "semantic_hash": ""
-  },
-  "src/lib/finance-ledger.test.ts": {
-    "mtime": 1788117763.8944879,
-    "seen": 1788227843.2974854,
-    "ast_hash": "606bede298a58c22cdfb1228b41a008f",
-    "semantic_hash": ""
-  },
-  "src/lib/finance-ledger.ts": {
-    "mtime": 1788117348.351541,
-    "seen": 1788227843.297487,
-    "ast_hash": "117b86f230bcd305609f5db838663c4b",
-    "semantic_hash": ""
-  },
-  "src/lib/subscription-lifecycle-rules.test.ts": {
-    "mtime": 1788117775.8982756,
-    "seen": 1788227843.3005393,
-    "ast_hash": "f2cb85e6c5020f213c8dfe9de1d34231",
-    "semantic_hash": ""
-  },
-  "src/lib/subscription-lifecycle-rules.ts": {
-    "mtime": 1788117356.3247805,
-    "seen": 1788227843.3005416,
-    "ast_hash": "15c9c8fce4ba80fc86490e94b376843a",
-    "semantic_hash": ""
-  },
-  "src/services/billing.scheduler.ts": {
-    "mtime": 1788117575.998418,
-    "seen": 1788227843.3063602,
-    "ast_hash": "74deade5adbd19537d5003531cff93bb",
-    "semantic_hash": ""
-  },
-  "scripts/pix-teste-estatico.png": {
-    "mtime": 1788218504.1884675,
-    "seen": 1788227843.3159273,
-    "ast_hash": "0ef5ce5a4457428b91721d203f865529",
-    "semantic_hash": ""
-  },
-  "scripts/pix-teste.png": {
-    "mtime": 1788218084.126191,
-    "seen": 1788227843.3159297,
-    "ast_hash": "a6762e12a5517728afebb4ed9782b006",
+    "mtime": 1787794905.6655738,
+    "seen": 1787795025.70082,
+    "ast_hash": "2c3273b600d798b5172fdfd847890c60",
     "semantic_hash": ""
   }
 }
