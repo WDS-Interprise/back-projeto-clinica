@@ -1,6 +1,9 @@
 import prisma from "@/lib/prisma.js"
 import { nextBackoffMs } from "@/lib/outbox.js"
-import { deliverQueuedPrescriptionShare } from "@/services/prescription.service.js"
+import {
+  deliverQueuedPrescriptionEmail,
+  deliverQueuedPrescriptionShare,
+} from "@/services/prescription.service.js"
 
 export async function processClinicalOutbox(limit = 20) {
   const now = new Date()
@@ -32,6 +35,10 @@ export async function processClinicalOutbox(limit = 20) {
         const payload = JSON.parse(event.payloadJson) as { shareId?: string }
         if (!payload.shareId) throw new Error("SHARE_ID_MISSING")
         await deliverQueuedPrescriptionShare(payload.shareId)
+      } else if (event.eventType === "PRESCRIPTION_SHARE_EMAIL") {
+        const payload = JSON.parse(event.payloadJson) as { shareId?: string }
+        if (!payload.shareId) throw new Error("SHARE_ID_MISSING")
+        await deliverQueuedPrescriptionEmail(payload.shareId)
       }
       await prisma.outboxEvent.update({
         where: { id: event.id },

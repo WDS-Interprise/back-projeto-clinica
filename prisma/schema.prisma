@@ -129,6 +129,7 @@ enum PrescriptionItemType {
 enum PrescriptionShareChannel {
   WHATSAPP
   EMAIL
+  SMS
 }
 
 enum PrescriptionShareStatus {

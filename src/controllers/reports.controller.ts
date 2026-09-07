@@ -56,3 +56,14 @@ export async function repasse(req: FastifyRequest, reply: FastifyReply) {
     return reply.status(500).send({ error: "Erro interno do servidor" })
   }
 }
+
+export async function prescriptions(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const ctx = await ctxFromRequest(req)
+    const q = req.query as { dateFrom?: string; dateTo?: string }
+    return reply.send(await reportsService.prescriptionsReport(ctx, q))
+  } catch (error) {
+    req.log.error(error)
+    return reply.status(500).send({ error: "Erro interno do servidor" })
+  }
+}

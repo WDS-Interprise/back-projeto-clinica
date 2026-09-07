@@ -205,3 +205,98 @@ export async function doctorRepasseReport(ctx: AuthContext, params: { dateFrom?:
     rows: [...byDoctor.entries()].map(([id, data]) => ({ id, ...data })),
   }
 }
+
+export async function prescriptionsReport(
+  ctx: AuthContext,
+  params: { dateFrom?: string; dateTo?: string }
+) {
+  const { from, to } = periodRange(params.dateFrom, params.dateTo)
+  const clinicId = ctx.clinicId
+
+  const prescriptions = await prisma.prescription.findMany({
+    where: {
+      clinicId,
+      status: "FINALIZED",
+      updatedAt: { gte: from, lte: to },
+    },
+    include: {
+      professional: { select: { id: true, name: true } },
+      patient: { select: { name: true } },
+      signature: { select: { status: true, legalClass: true } },
+      shares: {
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        select: {
+          id: true,
+          channel: true,
+          recipient: true,
+          status: true,
+          errorMessage: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: { updatedAt: "desc" },
+  })
+
+  const byProfessional = new Map<string, { name: string; count: number }>()
+  let simulated = 0
+  let unsigned = 0
+  let sharesSent = 0
+  let sharesFailed = 0
+  let sharesPending = 0
+  const byChannel: Record<string, number> = { WHATSAPP: 0, EMAIL: 0, SMS: 0 }
+  const failedShares: Array<{
+    date: string
+    channel: string
+    recipient: string
+    error: string
+    patientName: string
+    professionalName: string
+  }> = []
+
+  for (const rx of prescriptions) {
+    const prof = byProfessional.get(rx.professionalId) ?? {
+      name: rx.professional.name,
+      count: 0,
+    }
+    prof.count += 1
+    byProfessional.set(rx.professionalId, prof)
+
+    const simulatedSig =
+      rx.signature?.status === "SIMULATED" || rx.signature?.legalClass === "SIMULATION"
+    if (simulatedSig) simulated += 1
+    else if (!rx.signature) unsigned += 1
+
+    for (const share of rx.shares) {
+      byChannel[share.channel] = (byChannel[share.channel] ?? 0) + 1
+      if (share.status === "SENT") sharesSent += 1
+      else if (share.status === "FAILED") {
+        sharesFailed += 1
+        failedShares.push({
+          date: share.createdAt.toISOString(),
+          channel: share.channel,
+          recipient: share.recipient,
+          error: share.errorMessage ?? "-",
+          patientName: rx.patient.name,
+          professionalName: rx.professional.name,
+        })
+      } else sharesPending += 1
+    }
+  }
+
+  return {
+    period: { from: from.toISOString(), to: to.toISOString() },
+    totals: {
+      finalized: prescriptions.length,
+      simulated,
+      unsigned,
+      sharesSent,
+      sharesFailed,
+      sharesPending,
+      byChannel,
+    },
+    byProfessional: [...byProfessional.entries()].map(([id, data]) => ({ id, ...data })),
+    failedShares,
+  }
+}

@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto"
+import type { Prisma } from "@prisma/client"
 import prisma from "@/lib/prisma.js"
-import { PUBLIC_APP_URL } from "@/lib/env.js"
+import { FRONTEND_URL, PUBLIC_APP_URL } from "@/lib/env.js"
 import {
   buildPrescriptionFilename,
   buildPrescriptionHtml,
@@ -18,6 +19,7 @@ import {
 import { assertOwnsClinicalResource } from "@/domain/authorization/clinical.js"
 import { enqueueOutbox } from "@/lib/outbox.js"
 import { writeAuditLogInTx } from "@/lib/audit-log.js"
+import { sendPrescriptionPdfEmail } from "@/services/mail.service.js"
 import type { AuthContext } from "@/types/index.js"
 import type {
   CreatePrescriptionInput,
@@ -37,6 +39,7 @@ const prescriptionInclude = {
       whatsapp: true,
       address: true,
       birthDate: true,
+      email: true,
     },
   },
   professional: { select: { id: true, name: true, email: true } },
@@ -508,6 +511,126 @@ export async function deliverQueuedPrescriptionShare(shareId: string) {
   }
 }
 
+export async function deliverQueuedPrescriptionEmail(shareId: string) {
+  const share = await prisma.prescriptionShare.findUnique({
+    where: { id: shareId },
+  })
+  if (!share) throw new Error("SHARE_NOT_FOUND")
+  if (share.status === "SENT") return share
+  if (!share.recipient || !share.recipient.includes("@")) {
+    return prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: { status: "FAILED", errorMessage: "E-mail do paciente nao informado" },
+    })
+  }
+
+  const rx = await prisma.prescription.findFirst({
+    where: { id: share.prescriptionId },
+    include: prescriptionInclude,
+  })
+  if (!rx) throw new Error("NOT_FOUND")
+
+  await prisma.prescriptionShare.update({
+    where: { id: shareId },
+    data: { status: "PROCESSING" },
+  })
+
+  const pdfData = await loadPdfContext(rx)
+  const pdfBuffer = await readPrescriptionPdfBuffer(rx)
+  const clinic = await prisma.clinic.findUnique({
+    where: { id: rx.clinicId },
+    select: { name: true, email: true },
+  })
+  const frontBase = FRONTEND_URL.replace(/\/$/, "")
+  const validateUrl = `${frontBase}/validar-receita/${encodeURIComponent(pdfData.validationCode)}?code=${encodeURIComponent(pdfData.accessCode)}`
+  const signatureNote =
+    pdfData.signatureKind === "STUB"
+      ? "Documento emitido com simulacao de assinatura. Sem validade juridica ICP-Brasil."
+      : pdfData.signatureKind === "ICP_PADES"
+        ? "Documento com assinatura criptografica PAdES."
+        : "Documento emitido sem assinatura digital."
+
+  const result = await sendPrescriptionPdfEmail({
+    to: share.recipient,
+    patientName: pdfData.patientName,
+    professionalName: pdfData.professionalName,
+    clinicName: clinic?.name ?? pdfData.clinicName,
+    validationCode: pdfData.validationCode,
+    dateLabel: pdfData.prescriptionDate.toLocaleDateString("pt-BR"),
+    validateUrl,
+    signatureNote,
+    pdfBuffer,
+    fileName: buildPrescriptionFilename(pdfData),
+    replyTo: clinic?.email,
+  })
+
+  if (!result.delivered) {
+    return prisma.prescriptionShare.update({
+      where: { id: shareId },
+      data: {
+        status: "FAILED",
+        errorMessage: result.error ?? "Nao foi possivel enviar o e-mail.",
+      },
+    })
+  }
+
+  const sent = await prisma.prescriptionShare.update({
+    where: { id: shareId },
+    data: { status: "SENT", sentAt: new Date(), errorMessage: null },
+  })
+  await prisma.prescription.update({
+    where: { id: rx.id },
+    data: { sentAt: new Date() },
+  })
+  return sent
+}
+
+async function enqueueChannelShare(
+  tx: Prisma.TransactionClient,
+  input: {
+    clinicId: string
+    userId: string
+    actorRole: string
+    prescriptionId: string
+    channel: "WHATSAPP" | "EMAIL"
+    recipient: string
+    eventType: string
+    emptyError: string
+    description: string
+  }
+) {
+  const share = await tx.prescriptionShare.create({
+    data: {
+      prescriptionId: input.prescriptionId,
+      channel: input.channel,
+      recipient: input.recipient,
+      status: input.recipient ? "PENDING" : "FAILED",
+      errorMessage: input.recipient ? null : input.emptyError,
+    },
+  })
+  if (!input.recipient) return share
+  await enqueueOutbox(tx, {
+    clinicId: input.clinicId,
+    aggregateType: "Prescription",
+    aggregateId: input.prescriptionId,
+    eventType: input.eventType,
+    payload: { shareId: share.id, recipient: input.recipient },
+  })
+  await writeAuditLogInTx(tx, {
+    clinicId: input.clinicId,
+    userId: input.userId,
+    actorRole: input.actorRole,
+    module: "Prescricoes",
+    action: "PRESCRIPTION_SHARE_REQUESTED",
+    entityType: "Prescription",
+    entityId: input.prescriptionId,
+    description: input.description,
+    metadata: { shareId: share.id, channel: input.channel },
+    required: true,
+  })
+  return share
+}
+
 export async function finalize(
   ctx: AuthContext,
   id: string,
@@ -536,11 +659,13 @@ export async function finalize(
     signatureKind,
   })
 
-  const phone =
+    const phone =
     options.sharePhone?.trim() ||
     rx.patient.whatsapp?.trim() ||
     rx.patient.phone?.trim() ||
     ""
+  const emailAddress =
+    options.shareEmailAddress?.trim() || rx.patient.email?.trim() || ""
 
   await prisma.$transaction(async (tx) => {
     await tx.prescription.update({
@@ -616,36 +741,57 @@ export async function finalize(
     })
 
     if (options.shareWhatsApp) {
-      const share = await tx.prescriptionShare.create({
+      await enqueueChannelShare(tx, {
+        clinicId: ctx.clinicId,
+        userId: ctx.userId,
+        actorRole: ctx.role,
+        prescriptionId: id,
+        channel: "WHATSAPP",
+        recipient: phone,
+        eventType: "PRESCRIPTION_SHARE_WHATSAPP",
+        emptyError: "Telefone do paciente nao informado",
+        description: "Compartilhamento WhatsApp enfileirado",
+      })
+    }
+
+    if (options.shareEmail) {
+      await enqueueChannelShare(tx, {
+        clinicId: ctx.clinicId,
+        userId: ctx.userId,
+        actorRole: ctx.role,
+        prescriptionId: id,
+        channel: "EMAIL",
+        recipient: emailAddress,
+        eventType: "PRESCRIPTION_SHARE_EMAIL",
+        emptyError: "E-mail do paciente nao informado",
+        description: "Compartilhamento e-mail enfileirado",
+      })
+    }
+
+    if (options.shareSms) {
+      await tx.prescriptionShare.create({
         data: {
           prescriptionId: id,
-          channel: "WHATSAPP",
+          channel: "SMS",
           recipient: phone,
-          status: phone ? "PENDING" : "FAILED",
-          errorMessage: phone ? null : "Telefone do paciente nao informado",
+          status: "FAILED",
+          errorMessage: phone
+            ? "Gateway SMS ainda nao configurado. Use WhatsApp ou e-mail."
+            : "Telefone do paciente nao informado",
         },
       })
-      if (phone) {
-        await enqueueOutbox(tx, {
-          clinicId: ctx.clinicId,
-          aggregateType: "Prescription",
-          aggregateId: id,
-          eventType: "PRESCRIPTION_SHARE_WHATSAPP",
-          payload: { shareId: share.id, phone },
-        })
-        await writeAuditLogInTx(tx, {
-          clinicId: ctx.clinicId,
-          userId: ctx.userId,
-          actorRole: ctx.role,
-          module: "Prescricoes",
-          action: "PRESCRIPTION_SHARE_REQUESTED",
-          entityType: "Prescription",
-          entityId: id,
-          description: "Compartilhamento WhatsApp enfileirado",
-          metadata: { shareId: share.id },
-          required: true,
-        })
-      }
+      await writeAuditLogInTx(tx, {
+        clinicId: ctx.clinicId,
+        userId: ctx.userId,
+        actorRole: ctx.role,
+        module: "Prescricoes",
+        action: "PRESCRIPTION_SHARE_REQUESTED",
+        entityType: "Prescription",
+        entityId: id,
+        description: "Compartilhamento SMS registrado (gateway pendente)",
+        metadata: { channel: "SMS" },
+        required: true,
+      })
     }
   })
 

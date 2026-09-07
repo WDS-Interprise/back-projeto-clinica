@@ -37,7 +37,10 @@ const itemSchema = z.object({
 
 const finalizeSchema = z.object({
   shareWhatsApp: z.boolean().optional(),
+  shareSms: z.boolean().optional(),
+  shareEmail: z.boolean().optional(),
   sharePhone: z.string().optional(),
+  shareEmailAddress: z.string().optional(),
   signDigital: z.boolean().optional(),
 })
 

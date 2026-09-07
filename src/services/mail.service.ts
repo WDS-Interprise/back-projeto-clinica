@@ -220,3 +220,76 @@ export async function sendJoinRequestRejectedEmail(input: {
     replyTo: clinicReplyTo(input.clinicReplyTo),
   })
 }
+
+export async function sendPrescriptionPdfEmail(input: {
+  to: string
+  patientName: string
+  professionalName: string
+  clinicName: string
+  validationCode: string
+  dateLabel: string
+  validateUrl: string
+  signatureNote: string
+  pdfBuffer: Buffer
+  fileName: string
+  replyTo?: string | null
+}): Promise<MailSendResult> {
+  const subject = `Prescricao ClinMax: ${input.clinicName}`
+  const text = [
+    `Ola, ${input.patientName}.`,
+    "",
+    `Sua prescricao foi emitida pela clinica ${input.clinicName}.`,
+    `Profissional: ${input.professionalName}`,
+    `Data: ${input.dateLabel}`,
+    `Codigo da receita: ${input.validationCode}`,
+    "",
+    input.signatureNote,
+    "",
+    `Validar: ${input.validateUrl}`,
+    "",
+    "O PDF esta em anexo.",
+  ].join("\n")
+
+  const html = inviteEmailLayout(`
+    <h2 style="margin:0 0 12px;font-size:20px;color:#12261E">Sua prescricao</h2>
+    <p style="margin:0 0 12px;color:#5B6B63">Ola, <strong>${input.patientName}</strong>. A clinica <strong>${input.clinicName}</strong> enviou sua prescricao.</p>
+    <p style="margin:0 0 8px;color:#5B6B63">Profissional: <strong>${input.professionalName}</strong></p>
+    <p style="margin:0 0 8px;color:#5B6B63">Data: <strong>${input.dateLabel}</strong></p>
+    <p style="margin:0 0 16px;color:#5B6B63">Codigo: <strong>${input.validationCode}</strong></p>
+    <p style="margin:0 0 16px;font-size:13px;color:#8A9A90">${input.signatureNote}</p>
+    <p style="margin:0">${primaryButton(input.validateUrl, "Validar receita")}</p>
+  `)
+
+  const transport = createTransport()
+  if (!transport) {
+    console.log("[mail:dev] SMTP nao configurado. Prescricao nao enviada por e-mail.")
+    return {
+      delivered: false,
+      preview: { subject, text },
+      error: "SMTP da plataforma nao configurado. Conecte o e-mail em producao ou use WhatsApp.",
+    }
+  }
+
+  try {
+    await transport.sendMail({
+      from: resolveMailFrom(),
+      to: input.to,
+      replyTo: clinicReplyTo(input.replyTo),
+      subject,
+      text,
+      html,
+      attachments: [
+        {
+          filename: input.fileName,
+          content: input.pdfBuffer,
+          contentType: "application/pdf",
+        },
+      ],
+    })
+    return { delivered: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error("[mail] Falha ao enviar prescricao:", message, err)
+    return { delivered: false, error: message }
+  }
+}
