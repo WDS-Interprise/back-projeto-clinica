@@ -94,7 +94,7 @@
   "92": "list-patients.ts",
   "93": "probe-geninfra.ts",
   "94": "test-s3-endpoints.ts",
-  "95": "qrcode",
+  "95": "@aws-sdk/client-s3",
   "96": "@fastify/cors",
   "97": "prescription-share.ts",
   "98": "nodemailer",

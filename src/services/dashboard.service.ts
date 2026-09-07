@@ -242,6 +242,73 @@ export async function getPanelMetrics(ctx: AuthContext) {
         revenue: pctChange(weekNow.revenue, weekPrev.revenue),
       },
     },
+    prescriptions: await getPrescriptionOps(ctx, todayStart, todayEnd, weekStart, weekEnd),
+  }
+}
+
+async function getPrescriptionOps(
+  ctx: AuthContext,
+  todayStart: Date,
+  todayEnd: Date,
+  weekStart: Date,
+  weekEnd: Date
+) {
+  const clinicId = ctx.clinicId
+  const finalizedWhere = { clinicId, status: "FINALIZED" as const }
+
+  const [
+    finalizedToday,
+    finalizedWeek,
+    sharesFailed,
+    sharesPending,
+    simulatedToday,
+    unsignedToday,
+    whatsappConnected,
+    outboxPending,
+  ] = await Promise.all([
+    prisma.prescription.count({
+      where: { ...finalizedWhere, updatedAt: { gte: todayStart, lte: todayEnd } },
+    }),
+    prisma.prescription.count({
+      where: { ...finalizedWhere, updatedAt: { gte: weekStart, lte: weekEnd } },
+    }),
+    prisma.prescriptionShare.count({
+      where: { prescription: { clinicId }, status: "FAILED" },
+    }),
+    prisma.prescriptionShare.count({
+      where: { prescription: { clinicId }, status: { in: ["PENDING", "PROCESSING"] } },
+    }),
+    prisma.prescriptionSignature.count({
+      where: {
+        clinicId,
+        status: "SIMULATED",
+        createdAt: { gte: todayStart, lte: todayEnd },
+      },
+    }),
+    prisma.prescription.count({
+      where: {
+        ...finalizedWhere,
+        updatedAt: { gte: todayStart, lte: todayEnd },
+        signature: { is: null },
+      },
+    }),
+    prisma.whatsappConnection.count({
+      where: { clinicId, status: "CONNECTED" },
+    }),
+    prisma.outboxEvent.count({
+      where: { clinicId, status: { in: ["PENDING", "PROCESSING"] } },
+    }),
+  ])
+
+  return {
+    finalizedToday,
+    finalizedWeek,
+    sharesFailed,
+    sharesPending,
+    simulatedToday,
+    unsignedToday,
+    whatsappConnected: whatsappConnected > 0,
+    outboxPending,
   }
 }
 

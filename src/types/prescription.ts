@@ -33,6 +33,9 @@ export type UpdatePrescriptionInput = Partial<{
 
 export type FinalizePrescriptionInput = {
   shareWhatsApp?: boolean
+  shareSms?: boolean
+  shareEmail?: boolean
   sharePhone?: string
+  shareEmailAddress?: string
   signDigital?: boolean
 }

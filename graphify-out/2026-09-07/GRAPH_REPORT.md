@@ -1,7 +1,7 @@
-# Graph Report - back-projeto-clinica  (2026-09-07)
+# Graph Report - back-projeto-clinica  (2026-08-31)
 
 ## Corpus Check
-- 260 files · ~331,201 words
+- 260 files · ~331,220 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e1752fd1`
+- Built from commit: `711e950c`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -110,7 +110,7 @@
 - list-patients.ts
 - probe-geninfra.ts
 - test-s3-endpoints.ts
-- qrcode
+- @aws-sdk/client-s3
 - @fastify/cors
 - prescription-share.ts
 - nodemailer
@@ -138,16 +138,16 @@
 10. `buildAuthContext()` - 25 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `list()` --calls--> `appointmentDoctorFilter()`  [EXTRACTED]
-  back-projeto-clinica/src/services/record.service.ts → back-projeto-clinica/src/lib/auth-context.ts
-- `listInvoices()` --calls--> `moneyFromUnknown()`  [EXTRACTED]
-  back-projeto-clinica/src/services/subscription.service.ts → back-projeto-clinica/src/lib/money.ts
-- `main()` --calls--> `seedCid10()`  [EXTRACTED]
-  back-projeto-clinica/prisma/seed.ts → back-projeto-clinica/prisma/seed-cid10.ts
-- `main()` --calls--> `seedCid11()`  [EXTRACTED]
-  back-projeto-clinica/prisma/seed.ts → back-projeto-clinica/prisma/seed-cid11.ts
 - `main()` --calls--> `generateInviteCode()`  [EXTRACTED]
-  back-projeto-clinica/prisma/seed.ts → back-projeto-clinica/src/lib/invite-code.ts
+  prisma/seed.ts → src/lib/invite-code.ts
+- `main()` --calls--> `ensurePlatformPlansAndSettings()`  [EXTRACTED]
+  prisma/seed.ts → src/lib/saas-billing-seed.ts
+- `main()` --calls--> `migrateExistingClinicsToLegacy()`  [EXTRACTED]
+  prisma/seed.ts → src/lib/saas-billing-seed.ts
+- `main()` --calls--> `isMailConfigured()`  [EXTRACTED]
+  scripts/test-invite-mail.ts → src/lib/env.ts
+- `main()` --calls--> `getInviteEmailInlineImages()`  [EXTRACTED]
+  scripts/test-invite-mail.ts → src/lib/invite-email-assets.ts
 
 ## Import Cycles
 - None detected.
@@ -263,12 +263,12 @@ Cohesion: 0.10
 Nodes (20): 1. Selecionar o Node permanente, 2. Instalar e chamar o PM2 pelo mesmo Node, 3. Fazer backup do estado atual, 4. Corrigir o registro da clinmax-api, se necessário, 5. Regenerar o serviço systemd, 6. Validar a unit e os processos, 7. Testar um reboot planejado, Atualização futura do Node (+12 more)
 
 ### Community 27 - "whatsapp.service.ts"
-Cohesion: 0.25
-Nodes (18): assertConnectionAccess(), createConnection(), disconnect(), ensureConnectionRuntime(), getConnectionStatus(), isResumableStatus(), listConnections(), logout() (+10 more)
+Cohesion: 0.21
+Nodes (20): assertConnectionAccess(), createConnection(), disconnect(), ensureConnectionRuntime(), getConnectionStatus(), isResumableStatus(), listConnections(), logout() (+12 more)
 
 ### Community 28 - "manager.ts"
-Cohesion: 0.12
-Nodes (26): clearDbAuthState(), composingUntilByJid, setContactComposing(), bindConnectionHandlers(), bindMessageHandlers(), ConnectionRuntimeUpdate, createSocket(), disconnectRuntime() (+18 more)
+Cohesion: 0.13
+Nodes (24): clearDbAuthState(), composingUntilByJid, setContactComposing(), bindConnectionHandlers(), bindMessageHandlers(), createSocket(), getStatusCode(), logoutRuntime() (+16 more)
 
 ### Community 29 - "whatsapp-ai-tools.service.ts"
 Cohesion: 0.13
@@ -308,7 +308,7 @@ Nodes (19): formatRegulatoryCategory(), REGULATORY_LABELS, buildFallback(), Cach
 
 ### Community 38 - "dependencies"
 Cohesion: 0.09
-Nodes (23): @aws-sdk/client-s3, date-fns, dotenv, fastify, @fastify/jwt, @fastify/multipart, @hapi/boom, jsonwebtoken (+15 more)
+Nodes (23): date-fns, dotenv, fastify, @fastify/jwt, @fastify/multipart, @hapi/boom, jsonwebtoken, dependencies (+15 more)
 
 ### Community 39 - "encounter.service.ts"
 Cohesion: 0.16

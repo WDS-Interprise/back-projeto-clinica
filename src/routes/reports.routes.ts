@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify"
-import { attendance, noShows, birthdays, cid, repasse } from "@/controllers/reports.controller.js"
+import { attendance, noShows, birthdays, cid, repasse, prescriptions } from "@/controllers/reports.controller.js"
 import type { Permission } from "@/lib/permissions.js"
 
 export default async function (app: FastifyInstance) {
@@ -12,4 +12,5 @@ export default async function (app: FastifyInstance) {
   app.get("/birthdays", birthdays)
   app.get("/cid", cid)
   app.get("/repasse", repasse)
+  app.get("/prescriptions", prescriptions)
 }
